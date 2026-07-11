@@ -104,7 +104,7 @@ VolSeek-Agent 需要 **聊天 API** 和 **Embedding（向量化）API**。不同
 
 ---
 
-### 2.3 快速上手（以 DeepSeek + SiliconFlow 为例）
+### 2.3 快速上手（以 DeepSeek + text-embedding-v4 为例）
 
 #### 第一步：获取项目
 
@@ -115,9 +115,9 @@ cd VolSeek-Agent
 
 #### 第二步：注册 SiliconFlow（获取免费 Embedding API）
 
-DeepSeek **不支持**向量化，需要另一个服务商来做。SiliconFlow 注册即送 **$1 赠金**（无需绑卡）：
+DeepSeek **不支持**向量化，需要另一个服务商来做。百炼大模型 注册即送 **100w token**（无需绑卡）：
 
-1. 打开 https://cloud.siliconflow.com 注册账号
+1. 打开 https://bailian.console.aliyun.com 注册账号
 2. 进入 **API 密钥** 页面，创建一个密钥（以 `sk-` 开头）
 3. 复制密钥，下一步使用
 
@@ -133,7 +133,7 @@ cp .env.example .env
 
 编辑 `.env` 文件，按你的服务商填写。关键是要配 **两组** 配置——聊天和向量化可能是不同的服务商：
 
-**场景 A：DeepSeek 聊天 + SiliconFlow 向量化（推荐免费方案）**
+**场景 A：DeepSeek 聊天 + text-embedding-v4 向量化（推荐免费方案）**
 
 ```ini
 # ─── 聊天 API（DeepSeek）───────────────────────────────────
@@ -141,9 +141,9 @@ LLM_API_KEY=sk-your-deepseek-api-key
 LLM_BASE_URL=https://api.deepseek.com/v1
 LLM_MODEL=deepseek-v4-flash
 
-# ─── Embedding 向量化 API（SiliconFlow，免费）─────────────
-EMBEDDING_BASE_URL=https://api.siliconflow.com/v1
-EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+# ─── Embedding 向量化 API（text-embedding-v4 免费）─────────────
+EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+EMBEDDING_MODEL=text-embedding-v4
 ```
 
 **场景 B：OpenAI 一站式（一个密钥全搞定）**

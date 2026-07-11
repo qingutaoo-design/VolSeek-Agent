@@ -24,12 +24,15 @@ type ChatResponse struct {
 
 // Client 封装了 LLM 的所有调用能力。
 type Client struct {
-	client *openai.Client
-	model  string
+	client      *openai.Client
+	model       string
+	embedClient *openai.Client // 独立的 Embedding 客户端（不同服务商时使用）
+	embedModel  string         // Embedding 模型名
 }
 
-// NewClient 从环境变量创建 LLM 客户端。
-func NewClient(apiKey, baseURL, model string) *Client {
+// NewClient 创建 LLM 客户端。
+// embedBaseURL / embedModel / embedAPIKey 为空时，Embedding 复用聊天配置。
+func NewClient(apiKey, baseURL, model, embedBaseURL, embedModel, embedAPIKey string) *Client {
 	if apiKey == "" {
 		apiKey = "sk-placeholder"
 	}
@@ -39,12 +42,30 @@ func NewClient(apiKey, baseURL, model string) *Client {
 	if model == "" {
 		model = "gpt-4o-mini"
 	}
+	if embedModel == "" {
+		embedModel = "text-embedding-ada-002"
+	}
+	if embedAPIKey == "" {
+		embedAPIKey = apiKey // 没配独立密钥时，复用聊天密钥
+	}
 	cfg := openai.DefaultConfig(apiKey)
 	cfg.BaseURL = baseURL
-	return &Client{
-		client: openai.NewClientWithConfig(cfg),
-		model:  model,
+	c := &Client{
+		client:     openai.NewClientWithConfig(cfg),
+		model:      model,
+		embedModel: embedModel,
 	}
+
+	// 如果提供了独立的 Embedding 服务地址，创建专用客户端
+	if embedBaseURL != "" && embedBaseURL != baseURL {
+		eCfg := openai.DefaultConfig(embedAPIKey)
+		eCfg.BaseURL = embedBaseURL
+		c.embedClient = openai.NewClientWithConfig(eCfg)
+	} else {
+		c.embedClient = c.client
+	}
+
+	return c
 }
 
 // Chat 执行非流式聊天补全。
@@ -184,8 +205,12 @@ type toolCallAccumulator struct {
 
 // Embed 将文本向量化。
 func (c *Client) Embed(ctx context.Context, text string) ([]float64, error) {
-	resp, err := c.client.CreateEmbeddings(ctx, openai.EmbeddingRequest{
-		Model: openai.EmbeddingModel("text-embedding-ada-002"),
+	ec := c.embedClient
+	if ec == nil {
+		ec = c.client
+	}
+	resp, err := ec.CreateEmbeddings(ctx, openai.EmbeddingRequest{
+		Model: openai.EmbeddingModel(c.embedModel),
 		Input: []string{text},
 	})
 	if err != nil {
@@ -203,14 +228,19 @@ func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float64, e
 	const batchSize = 20
 	results := make([][]float64, len(texts))
 
+	ec := c.embedClient
+	if ec == nil {
+		ec = c.client
+	}
+
 	for i := 0; i < len(texts); i += batchSize {
 		end := i + batchSize
 		if end > len(texts) {
 			end = len(texts)
 		}
 		batch := texts[i:end]
-		resp, err := c.client.CreateEmbeddings(ctx, openai.EmbeddingRequest{
-			Model: openai.EmbeddingModel("text-embedding-ada-002"),
+		resp, err := ec.CreateEmbeddings(ctx, openai.EmbeddingRequest{
+			Model: openai.EmbeddingModel(c.embedModel),
 			Input: batch,
 		})
 		if err != nil {

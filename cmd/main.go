@@ -42,6 +42,11 @@ func main() {
 	baseURL := config.GetEnv("LLM_BASE_URL", "https://api.openai.com/v1")
 	model := config.GetEnv("LLM_MODEL", "gpt-4o-mini")
 
+	// Embedding 配置（可独立于聊天 API，如 DeepSeek 聊天 + SiliconFlow 向量化）
+	embedBaseURL := config.GetEnv("EMBEDDING_BASE_URL", baseURL)
+	embedModel := config.GetEnv("EMBEDDING_MODEL", "text-embedding-ada-002")
+	embedAPIKey := config.GetEnv("EMBEDDING_API_KEY", apiKey) // 没配则复用聊天密钥
+
 	if apiKey == "" {
 		fmt.Println("⚠️  LLM_API_KEY 未设置！")
 		fmt.Println("请复制 .env.example 为 .env 并填入你的 API Key")
@@ -53,7 +58,7 @@ func main() {
 	// 初始化 LLM 客户端
 	// ========================================================================
 	fmt.Print("🔄 Initializing LLM client... ")
-	llmClient := llm.NewClient(apiKey, baseURL, model)
+	llmClient := llm.NewClient(apiKey, baseURL, model, embedBaseURL, embedModel, embedAPIKey)
 	fmt.Println("✅")
 
 	// ========================================================================

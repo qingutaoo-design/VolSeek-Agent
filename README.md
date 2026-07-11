@@ -3,20 +3,21 @@
 > **从零构建一个具有规划、执行和反思能力的智能 RAG Agent**  
 > **项目地址**: https://github.com/qingutaoo-design/VolSeek-Agent  
 > **技术栈**: Go + OpenAI/DeepSeek API + 向量检索 + 知识图谱  
-> **学习周期**: 5 天
+> **学习周期**: 5个部分
 
 ---
 
 ## 📋 目录
 
 1. [项目概述与架构设计](#1-项目概述与架构设计)
-2. [Day 1 — 核心类型系统](#2-day-1--核心类型系统)
-3. [Day 2 — LLM 客户端封装](#3-day-2--llm-客户端封装)
-4. [Day 3 — RAG 引擎（向量搜索 + 知识图谱）](#4-day-3--rag-引擎向量搜索--知识图谱)
-5. [Day 4 — Agent 引擎（Plan-Execute-Reflect）](#5-day-4--agent-引擎plan-execute-reflect)
-6. [Day 5 — 工具系统与主入口](#6-day-5--工具系统与主入口)
-7. [创新亮点总结](#7-创新亮点总结)
-8. [面试准备](#8-面试准备)
+2. [快速启动指南](#2-快速启动指南)
+3. [Part 1 — 核心类型系统](#3-part-1--核心类型系统)
+4. [Part 2 — LLM 客户端封装](#4-part-2--llm-客户端封装)
+5. [Part 3 — RAG 引擎（向量搜索 + 知识图谱）](#5-part-3--rag-引擎向量搜索--知识图谱)
+6. [Part 4 — Agent 引擎（Plan-Execute-Reflect）](#6-part-4--agent-引擎plan-execute-reflect)
+7. [Part 5 — 工具系统与主入口](#7-part-5--工具系统与主入口)
+8. [创新亮点总结](#8-创新亮点总结)
+
 
 ---
 
@@ -77,7 +78,278 @@ VolSeek-Agent/
 
 ---
 
-## 2. Day 1 — 核心类型系统
+## 2. 快速启动指南
+
+> 从零开始运行 VolSeek-Agent，最快只需 2 分钟。
+
+### 2.1 前置条件
+
+| 运行方式 | 要求 |
+|---------|------|
+| **源代码运行** | Go 1.21+、Git |
+| **预编译二进制** | Windows（`main.exe` 已附在项目根目录） |
+| **API 密钥** | 至少一个兼容 OpenAI API 的服务商（见下方对照表） |
+
+### 2.2 选择你的服务商方案
+
+VolSeek-Agent 需要 **聊天 API** 和 **Embedding（向量化）API**。不同服务商的策略不同：
+
+| 方案 | 聊天 API | Embedding API | 费用 | 推荐指数 |
+|------|---------|--------------|------|---------|
+| **🥇 OpenAI 一站式** | `gpt-4o-mini` | `text-embedding-ada-002` | 付费，但最稳定 | ⭐⭐⭐⭐⭐ |
+| **🥈 DeepSeek + SiliconFlow（免费）** | `deepseek-v4-flash` | `BAAI/bge-large-zh-v1.5` | **聊天付费，Embedding 免费** | ⭐⭐⭐⭐ |
+| **🥉 Ollama 全本地** | `llama3` 等 | `nomic-embed-text` | **完全免费**（需本地 GPU） | ⭐⭐⭐ |
+
+> 💡 **本文推荐方案 🥈**：聊天用你已有的 DeepSeek 密钥 + 向量化用 SiliconFlow 的免费赠金。下面以此为例。
+
+---
+
+### 2.3 快速上手（以 DeepSeek + SiliconFlow 为例）
+
+#### 第一步：获取项目
+
+```bash
+git clone https://github.com/qingutaoo-design/VolSeek-Agent.git
+cd VolSeek-Agent
+```
+
+#### 第二步：注册 SiliconFlow（获取免费 Embedding API）
+
+DeepSeek **不支持**向量化，需要另一个服务商来做。SiliconFlow 注册即送 **$1 赠金**（无需绑卡）：
+
+1. 打开 https://cloud.siliconflow.com 注册账号
+2. 进入 **API 密钥** 页面，创建一个密钥（以 `sk-` 开头）
+3. 复制密钥，下一步使用
+
+#### 第三步：配置环境变量
+
+```bash
+# Windows (PowerShell)
+Copy-Item .env.example .env
+
+# Linux / macOS
+cp .env.example .env
+```
+
+编辑 `.env` 文件，按你的服务商填写。关键是要配 **两组** 配置——聊天和向量化可能是不同的服务商：
+
+**场景 A：DeepSeek 聊天 + SiliconFlow 向量化（推荐免费方案）**
+
+```ini
+# ─── 聊天 API（DeepSeek）───────────────────────────────────
+LLM_API_KEY=sk-your-deepseek-api-key
+LLM_BASE_URL=https://api.deepseek.com/v1
+LLM_MODEL=deepseek-v4-flash
+
+# ─── Embedding 向量化 API（SiliconFlow，免费）─────────────
+EMBEDDING_BASE_URL=https://api.siliconflow.com/v1
+EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+```
+
+**场景 B：OpenAI 一站式（一个密钥全搞定）**
+
+```ini
+# ─── 聊天 API（OpenAI）──────────────────────────────────────
+LLM_API_KEY=sk-your-openai-api-key
+LLM_BASE_URL=https://api.openai.com/v1
+LLM_MODEL=gpt-4o-mini
+
+# ─── Embedding（保持默认即可）──────────────────────────────
+# EMBEDDING_BASE_URL=              ← 留空，复用 LLM_BASE_URL
+# EMBEDDING_MODEL=text-embedding-ada-002
+```
+
+**场景 C：Ollama 全本地运行（完全免费，需本地部署）**
+
+```ini
+# ─── 聊天 API（Ollama 本地）────────────────────────────────
+LLM_API_KEY=ollama                    # Ollama 不需要真实密钥
+LLM_BASE_URL=http://localhost:11434/v1
+LLM_MODEL=llama3
+
+# ─── Embedding 向量化（Ollama 本地）───────────────────────
+EMBEDDING_BASE_URL=http://localhost:11434/v1
+EMBEDDING_MODEL=nomic-embed-text
+```
+
+> **注意**：场景 C 需要先运行 `ollama pull llama3` 和 `ollama pull nomic-embed-text`。
+
+#### 第四步：运行
+
+**方式 A：使用预编译二进制（Windows，无需安装 Go）**
+
+```bash
+# 交互模式
+.\main.exe
+
+# 直接提问
+.\main.exe "RAG 和 GraphRAG 有什么区别？"
+```
+
+**方式 B：源码运行**
+
+```bash
+# 交互模式
+go run cmd/main.go
+
+# 直接提问
+go run cmd/main.go "什么是 RAG？"
+```
+
+**方式 C：编译后运行**
+
+```bash
+go build -o volseek cmd/main.go
+
+# Linux / macOS
+./volseek "Go 语言的 goroutine 是什么？"
+
+# Windows
+.\volseek.exe "Go 语言的 goroutine 是什么？"
+```
+
+---
+
+### 2.4 首次运行体验
+
+启动后，你将看到如下输出：
+
+```
+🔄 Initializing LLM client... ✅
+🔄 Initializing RAG engine... ✅
+🔄 Indexing sample documents... ✅ (10 chunks, 15 entities, 12 relations)
+🔄 Initializing tools... ✅
+🔄 Initializing Agent engine... ✅
+============================================================
+🤖 VolSeek-Agent 已就绪！
+============================================================
+
+💡 输入你的问题（输入 'exit' 退出, 'stats' 查看状态）:
+```
+
+项目已内置 3 篇示例文档（RAG 技术介绍、Go 语言入门、VolSeek-Agent 设计文档），启动后自动索引，可直接提问。
+
+#### 示例问答
+
+```
+❓ RAG 和 GraphRAG 有什么区别？
+
+📋 Analyzing your question...
+
+🤔 我来分析 RAG 和 GraphRAG 的区别...
+
+🔧 🔍 Searching knowledge base...
+
+📝 RAG（Retrieval-Augmented Generation）是一种结合信息检索与文本生成的...
+GraphRAG 是 RAG 的进阶版本，通过构建知识图谱来理解实体间的关系...
+
+🎯 Confidence: 92%
+```
+
+其他可以尝试的问题：
+
+| 问题 | 预期效果 |
+|------|---------|
+| `什么是 RAG？` | 事实性查询，精确检索文档块 |
+| `Go 语言的 goroutine 是什么？` | 概念性查询，语义检索 |
+| `RAG 和 GraphRAG 有什么区别？` | 比较性查询，混合检索 + RRF 融合 |
+| `分析 RAG 技术的优缺点` | 分析性查询，向量搜索 + 知识图谱拓展 |
+| `stats` | 查看系统状态（文档块数、实体数、关系数） |
+
+---
+
+### 2.5 配置详解
+
+`.env` 中所有可配置项：
+
+| 变量 | 默认值 | 说明 |
+|------|--------|------|
+| `LLM_API_KEY` | — | **必填**。聊天 API 的密钥 |
+| `LLM_BASE_URL` | `https://api.openai.com/v1` | 聊天 API 的端点地址 |
+| `LLM_MODEL` | `gpt-4o-mini` | 聊天模型名称 |
+| `EMBEDDING_BASE_URL` | `（同 LLM_BASE_URL）` | Embedding API 端点。**不同服务商时需单独设置** |
+| `EMBEDDING_MODEL` | `text-embedding-ada-002` | Embedding 模型名称 |
+| `SERP_API_KEY` | — | 网页搜索 API 密钥（可选，留空不影响核心功能） |
+
+#### 常见 Embedding 模型推荐
+
+| 服务商 | 推荐模型 | 特点 |
+|-------|---------|------|
+| OpenAI | `text-embedding-ada-002` | 通用，维数 1536 |
+| OpenAI | `text-embedding-3-small` | 性价比更高 |
+| **SiliconFlow（免费）** | **`BAAI/bge-large-zh-v1.5`** | **中文优化，推荐** |
+| SiliconFlow（免费） | `Qwen/Qwen3-Embedding-0.6B` | 最便宜，$0.01/M tokens |
+| Ollama 本地 | `nomic-embed-text` | 完全免费，需本地运行 |
+
+---
+
+### 2.6 常见问题排查
+
+#### ❌ 启动时报 "embedding failed" / 启动卡住
+
+**原因**：你的 `LLM_BASE_URL` 指向的 API 不支持 Embedding（如 DeepSeek）。
+
+**解决**：在 `.env` 中单独配置 `EMBEDDING_BASE_URL`，指向支持 Embedding 的服务商（如 SiliconFlow）。
+
+```ini
+# 加入这两行即可
+EMBEDDING_BASE_URL=https://api.siliconflow.com/v1
+EMBEDDING_MODEL=BAAI/bge-large-zh-v1.5
+```
+
+#### ❌ "401 Unauthorized" / "鉴权失败"
+
+**原因**：API 密钥不正确，或用了 OpenAI 的密钥去调 DeepSeek。
+
+**解决**：检查 `.env` 中 `LLM_API_KEY` 和 `LLM_BASE_URL` 是否匹配同一服务商。
+
+#### ❌ "模型不存在" 或 "404"
+
+**原因**：`LLM_MODEL` 或 `EMBEDDING_MODEL` 名称在当前服务商中不存在。
+
+**解决**：
+- 查一下对应服务商的官方文档确认模型名
+- DeepSeek 常用：`deepseek-chat` / `deepseek-v3` / `deepseek-v4-flash`
+- SiliconFlow 模型列表：https://docs.siliconflow.com/en/api-reference/embeddings/create-embeddings
+
+#### ❌ 程序能运行但回答质量差
+
+**原因**：内置文档是中文示例，如果用了英文 Embedding 模型可能匹配不准。
+
+**解决**：推荐使用中文优化的模型，如 `BAAI/bge-large-zh-v1.5`。
+
+---
+
+### 2.7 常用命令速查
+
+```bash
+# 交互模式
+go run cmd/main.go
+
+# 单次查询
+go run cmd/main.go "你的问题"
+
+# 编译为二进制
+go build -o volseek cmd/main.go
+
+# 生产部署（关闭反思可提升速度）
+go build -o volseek -ldflags="-s -w" cmd/main.go
+
+# 查看系统统计（交互模式下输入）
+stats
+```
+
+---
+
+### 2.8 下一步
+
+- 阅读 **[Part 1 — 核心类型系统](#3-part-1--核心类型系统)**，了解项目的数据类型设计
+- 将你自己的文档加入 `cmd/main.go` 的 `indexSampleDocuments` 函数，构建私有知识库
+- 调整 `AgentConfig` 中的参数（如 `EnableReflection`、`ParallelToolCalls`），观察不同配置下的表现差异
+
+---
+
+## 2. Part 1 — 核心类型系统
 
 ### 📂 文件: `internal/types/types.go`
 
@@ -230,7 +502,7 @@ type StreamEvent struct {
 
 ---
 
-## 3. Day 2 — LLM 客户端封装
+## 3. Part 2 — LLM 客户端封装
 
 ### 📂 文件: `internal/llm/client.go`
 
@@ -320,7 +592,7 @@ func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float64, e
 
 ---
 
-## 4. Day 3 — RAG 引擎（向量搜索 + 知识图谱）
+## 4. Part 3 — RAG 引擎（向量搜索 + 知识图谱）
 
 ### 📂 文件: `internal/rag/rag.go`
 
@@ -534,7 +806,7 @@ func (qr *QueryRouter) Analyze(ctx context.Context, query string) (*types.QueryI
 
 ---
 
-## 5. Day 4 — Agent 引擎（Plan-Execute-Reflect）
+## 5. Part 4 — Agent 引擎（Plan-Execute-Reflect）
 
 ### 📂 文件: `internal/agent/engine.go`
 
@@ -680,7 +952,7 @@ func (e *AgentEngine) executeParallel(
 
 ---
 
-## 6. Day 5 — 工具系统与主入口
+## 6. Part 5 — 工具系统与主入口
 
 ### 📂 文件: `internal/tools/tools.go`
 
@@ -873,43 +1145,3 @@ func runQuery(ctx context.Context, volseek *agent.AgentEngine, query string) {
 | "A和B有什么区别" | LLM 分类 / 关键词"区别" | 混合搜索 + RRF 融合 |
 | "分析RAG的优缺点" | LLM 分类 / 关键词"分析" | 向量搜索 + 知识图谱拓展 |
 | "今天比特币价格" | LLM 分类 / 关键词"latest" | 不检索，返回空等 web_search |
-
----
-
-## 8. 面试准备
-
-### 8.1 项目经历模板
-
-```markdown
-**VolSeek-Agent — 智能 RAG Agent 框架** | Go
-
-项目概述：
-从零实现了一个具有规划、执行和反思能力的智能 RAG Agent 框架。
-区别于传统 ReAct 模式，采用 Plan-then-Execute 架构，
-结合 GraphRAG（知识图谱增强检索）和 Self-Reflection（自我反思）机制。
-
-核心职责：
-- 设计并实现了 Plan-then-Execute Agent 引擎，支持先规划再执行
-- 构建了 GraphRAG 知识图谱系统，支持实体关系自动提取和遍历查询
-- 实现了自适应查询路由器，根据意图类型选择最优检索策略
-- 开发了可扩展的工具注册中心，支持并行工具调用
-
-技术栈：Go, OpenAI API, 向量检索, 知识图谱, 递归下降解析器
-
-技术亮点：
-- 🔄 Plan-then-Execute：Agent 先分析问题生成结构化计划，再按计划执行
-- 🕸️ GraphRAG：从文档中自动提取实体关系，支持关系遍历查询
-- 🔍 Self-Reflection：答案生成后自我评审质量，自动修正
-- 🧠 自适应路由：7 种查询类型，自动选择检索策略
-```
-
-### 8.2 常见面试问题
-
-| 问题 | 参考答案 |
-|------|---------|
-| **Plan-then-Execute 和 ReAct 有什么区别？** | ReAct 是"边想边做"，容易进入死循环；Plan-then-Execute 先制定完整计划再执行，效率更高且可控。 |
-| **GraphRAG 比普通 RAG 好在哪里？** | 普通 RAG 只做向量相似度搜索，GraphRAG 还能通过实体关系找到"间接相关"的信息。比如搜索"Go语言"能找到"Google"和"并发编程"等相关概念。 |
-| **如何处理 LLM 返回空回答的情况？** | 检测到 stop + 空内容时，直接返回友好的错误提示而不是继续循环。这是 Review 阶段发现并修复的关键 Bug。 |
-| **工具并行执行有什么坑？** | 不能用 errgroup.WithContext，因为它会在第一个工具失败时取消其他工具。应该用 sync.WaitGroup 确保各个工具独立执行。 |
-| **向量搜索和关键词搜索怎么融合？** | 使用 RRF（Reciprocal Rank Fusion），公式为 Σ(1/(k+rank))，k 取 60。简单有效，不需要训练。 |
-| **你的项目有什么设计模式？** | 工具注册中心（Registry Pattern）、策略模式（Retriever 的不同检索策略）、模板方法（Plan-Execute-Reflect 三阶段）。 |

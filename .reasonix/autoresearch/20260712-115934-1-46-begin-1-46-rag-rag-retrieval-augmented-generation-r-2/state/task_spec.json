@@ -1,0 +1,68 @@
+{
+  "task_id": "20260712-115934-1-46-begin-1-46-rag-rag-retrieval-augmented-generation-r-2",
+  "goal": "[已粘贴文本 #1 · 46 行]\n\n--- Begin [已粘贴文本 #1 · 46 行] ---\n\t\"RAG 技术介绍\": `RAG（Retrieval-Augmented Generation，检索增强生成）是一种结合信息检索与文本生成的人工智能技术。\r\nRAG 的核心思想是：在 LLM 生成答案之前，先从外部知识库中检索相关信息，然后将检索到的内容作为上下文提供给 LLM。\r\n这种方法有效解决了传统 LLM 的三大问题：\r\n1. 知识截止日期：LLM 的训练数据只到某个时间点，之后的信息无法获知\r\n2. 幻觉问题：LLM 可能编造看起来合理但实际上错误的信息\r\n3. 领域知识不足：通用 LLM 缺乏特定领域的专业知识\r\n\r\nRAG 的典型工作流程包括三个步骤：\r\n第一步（索引）：将文档分块、向量化，存入向量数据库\r\n第二步（检索）：将用户问题向量化，在数据库中搜索最相似的文档块\r\n第三步（生成）：将检索到的文档块作为上下文，让 LLM 生成答案\r\n\r\nRAG 广泛应用于智能客服、企业知识库问答、法律文档分析、医疗辅助诊断等领域。\r\nGraphRAG 是 RAG 的进阶版本，通过构建知识图谱来理解实体间的关系，提供更深入的分析能力。`,\r\n\r\n\t\t\"Go 语言入门\": `Go（又称 Golang）是 Google 开发的开源编程语言，于 2009 年正式对外发布。\r\nGo 语言的设计者是 Robert Griesemer、Rob Pike 和 Ken Thompson（Unix 和 C 语言的共同创造者）。\r\nGo 的三大设计目标是：简洁的语法、高效的编译、强大的并发支持。\r\n\r\nGo 语言的主要特性包括：\r\n- 静态类型和类型推断\r\n- 垃圾回收机制\r\n- 内置并发原语（goroutine 和 channel）\r\n- 快速编译\r\n- 标准库丰富\r\n- 跨平台支持\r\n\r\ngoroutine 是 Go 语言最著名的特性，它是一种轻量级线程，创建成本极低（仅几 KB）。\r\n通过 go 关键字可以启动一个 goroutine：go func() { ... }()\r\nchannel 是 goroutine 之间的通信机制，遵循\"CSP\"（Communicating Sequential Processes）模型。`,\r\n\r\n\t\t\"VolSeek-Agent 设计文档\": `VolSeek-Agent 是一个具有规划、执行和反思能力的智能 RAG Agent 框架。\r\n其核心架构分为三个主要阶段：\r\n\r\n1. 规划阶段（Plan）：Agent 收到用户问题后，首先通过意图路由器分析问题类型（事实性、概念性、比较性等），然后由 LLM 生成结构化的执行计划。\r\n   执行计划包含目标重述、子目标列表和所需工具的判断。\r\n\r\n2. 执行阶段（Execute）：Agent 按计划逐步执行，每步调用 LLM + 工具。\r\n   核心工具包括：knowledge_search（语义搜索）、graph_search（图谱搜索）、web_search（网页搜索）、calculator（计算器）。\r\n   支持并行工具调用，当多个工具相互独立时并发执行以提高效率。\r\n\r\n3. 反思阶段（Reflect）：Agent 生成答案后对其质量进行自我评审。\r\n   评审维度包括：准确性（是否有事实错误）、完整性（是否回答所有问题点）、清晰度（表达是否易懂）。\r\n   如果评审发现问题，Agent 会自动修正答案。\r\n\r\nVolSeek-Agent 的技术栈：Go 语言、OpenAI/DeepSeek API、向量检索、知识图谱。`,\n--- End [已粘贴文本 #1 · 46 行] ---那你根据我的切片策略，对照这个知识库，给我出一个刁钻的问题",
+  "scope": null,
+  "non_goals": null,
+  "allowed_operations": {
+    "write": true,
+    "network": false,
+    "publish": false
+  },
+  "success_criteria": [
+    {
+      "id": "objective_evidence",
+      "description": "The goal outcome is supported by direct evidence, such as inspected code, reproduced behavior, source material, or concrete findings.",
+      "required": true,
+      "evidence_ids": [
+        "f1",
+        "f3",
+        "f5",
+        "f7",
+        "f9",
+        "f11",
+        "f13",
+        "f15",
+        "f16",
+        "f17",
+        "f18",
+        "f19",
+        "f21",
+        "f22",
+        "f23",
+        "f24",
+        "f26",
+        "f27",
+        "f28",
+        "f29",
+        "f30",
+        "f31",
+        "f32",
+        "f33",
+        "f34",
+        "f35",
+        "f36",
+        "f39",
+        "f40",
+        "f41"
+      ]
+    },
+    {
+      "id": "verification",
+      "description": "The result has relevant verification evidence, such as tests, commands, benchmarks, manual checks, or a documented reason why verification is not applicable.",
+      "required": true,
+      "evidence_ids": [
+        "f2",
+        "f4",
+        "f6",
+        "f8",
+        "f10",
+        "f12",
+        "f14",
+        "f20",
+        "f25",
+        "f37",
+        "f38"
+      ]
+    }
+  ]
+}

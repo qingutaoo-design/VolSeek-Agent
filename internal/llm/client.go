@@ -225,7 +225,7 @@ func (c *Client) Embed(ctx context.Context, text string) ([]float64, error) {
 
 // EmbedBatch 批量向量化文本。
 func (c *Client) EmbedBatch(ctx context.Context, texts []string) ([][]float64, error) {
-	const batchSize = 20
+	const batchSize = 10 // DashScope 限制每批≤10，OpenAI 支持更高
 	results := make([][]float64, len(texts))
 
 	ec := c.embedClient

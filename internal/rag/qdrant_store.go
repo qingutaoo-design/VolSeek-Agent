@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
@@ -49,16 +48,7 @@ func (qs *QdrantStore) ensureCollection(ctx context.Context) error {
 		return err
 	}
 	if exists {
-		log.Printf("[Qdrant] Collection %q exists, clearing...", qs.collection)
-		// 清空所有点
-		_, err := qs.client.Delete(ctx, &qdrant.DeletePoints{
-			CollectionName: qs.collection,
-			Wait:           qdrant.PtrOf(true),
-			Points:         qdrant.NewPointsSelectorFilter(&qdrant.Filter{}),
-		})
-		if err != nil {
-			log.Printf("[Qdrant] Warning clear: %v", err)
-		}
+		log.Printf("[Qdrant] Collection %q exists, reusing existing data", qs.collection)
 		return nil
 	}
 
@@ -122,17 +112,20 @@ func pointToChunk(point *qdrant.ScoredPoint) *types.Chunk {
 }
 
 // toPoint 将 Chunk 转为 Qdrant PointStruct。
-func (qs *QdrantStore) toPoint(chunk *types.Chunk) *qdrant.PointStruct {
+func (qs *QdrantStore) toPoint(chunk *types.Chunk, docUUID, docHash string) *qdrant.PointStruct {
 	if chunk.Embedding == nil {
 		return nil
 	}
+	payload := map[string]*qdrant.Value{
+		"content":   qdrant.NewValueString(chunk.Content),
+		"doc_title": qdrant.NewValueString(chunk.DocTitle),
+		"doc_uuid":  qdrant.NewValueString(docUUID),
+		"doc_hash":  qdrant.NewValueString(docHash),
+		"index":     qdrant.NewValueInt(int64(chunk.Index)),
+	}
 	return &qdrant.PointStruct{
-		Id: qdrant.NewID(uuid.New().String()),
-		Payload: map[string]*qdrant.Value{
-			"content":   qdrant.NewValueString(chunk.Content),
-			"doc_title": qdrant.NewValueString(chunk.DocTitle),
-			"index":     qdrant.NewValueInt(int64(chunk.Index)),
-		},
+		Id:      qdrant.NewID(uuid.New().String()),
+		Payload: payload,
 		Vectors: qdrant.NewVectors(float64to32(chunk.Embedding)...),
 	}
 }
@@ -140,7 +133,7 @@ func (qs *QdrantStore) toPoint(chunk *types.Chunk) *qdrant.PointStruct {
 // Add 添加单个分块。
 func (qs *QdrantStore) Add(chunk *types.Chunk) {
 	qs.chunks = append(qs.chunks, chunk)
-	p := qs.toPoint(chunk)
+	p := qs.toPoint(chunk, "", "")
 	if p == nil {
 		return
 	}
@@ -155,12 +148,19 @@ func (qs *QdrantStore) Add(chunk *types.Chunk) {
 }
 
 // AddBatch 批量添加分块。
+// docUUID 和 docHash 为文档级元数据，用于后续增量更新。
 func (qs *QdrantStore) AddBatch(chunks []*types.Chunk) {
+	qs.AddBatchWithMeta(chunks, "", "", true)
+}
+
+// AddBatchWithMeta 批量添加并写入文档元数据。
+// wait=true 同步刷盘；wait=false 异步写入（更快，但宕机可能丢数据）。
+func (qs *QdrantStore) AddBatchWithMeta(chunks []*types.Chunk, docUUID, docHash string, wait bool) {
 	qs.chunks = append(qs.chunks, chunks...)
 
 	points := make([]*qdrant.PointStruct, 0, len(chunks))
 	for _, ch := range chunks {
-		if p := qs.toPoint(ch); p != nil {
+		if p := qs.toPoint(ch, docUUID, docHash); p != nil {
 			points = append(points, p)
 		}
 	}
@@ -168,8 +168,8 @@ func (qs *QdrantStore) AddBatch(chunks []*types.Chunk) {
 		return
 	}
 
-	// 分批 upsert（每批最多 100）
-	batchSize := 100
+	// 批量写入，每批 5000（Qdrant 建议 ≤ 10000）
+	batchSize := 5000
 	for i := 0; i < len(points); i += batchSize {
 		end := i + batchSize
 		if end > len(points) {
@@ -177,13 +177,12 @@ func (qs *QdrantStore) AddBatch(chunks []*types.Chunk) {
 		}
 		_, err := qs.client.Upsert(context.Background(), &qdrant.UpsertPoints{
 			CollectionName: qs.collection,
-			Wait:           qdrant.PtrOf(true),
+			Wait:           qdrant.PtrOf(wait),
 			Points:         points[i:end],
 		})
 		if err != nil {
 			log.Printf("[Qdrant] batch upsert error at %d: %v", i, err)
 		}
-		time.Sleep(50 * time.Millisecond)
 	}
 }
 
@@ -231,7 +230,52 @@ func (qs *QdrantStore) Len() int {
 	return len(qs.chunks)
 }
 
-// Close 关闭 gRPC 连接。
-func (qs *QdrantStore) Close() error {
-	return qs.client.Close()
+// ScrollByFilter 按 payload 字段过滤查询点，用于验证文档哈希。
+func (qs *QdrantStore) ScrollByFilter(ctx context.Context, filter map[string]string, limit uint32) ([]*qdrant.RetrievedPoint, error) {
+	var conditions []*qdrant.Condition
+	for k, v := range filter {
+		conditions = append(conditions, qdrant.NewMatch(k, v))
+	}
+	resp, err := qs.client.Scroll(context.Background(), &qdrant.ScrollPoints{
+		CollectionName: qs.collection,
+		Filter: &qdrant.Filter{
+			Must: conditions,
+		},
+		Limit:       &limit,
+		WithPayload: qdrant.NewWithPayload(true),
+	})
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+// Count 返回 Qdrant 集合中的实际点数。
+func (qs *QdrantStore) Count(ctx context.Context) (uint64, error) {
+	return qs.client.Count(ctx, &qdrant.CountPoints{
+		CollectionName: qs.collection,
+		Exact:          qdrant.PtrOf(true),
+	})
+}
+
+// DeleteByDocUUID 删除指定文档的所有关联 chunk（用于增量更新）。
+func (qs *QdrantStore) DeleteByDocUUID(ctx context.Context, docUUID string) error {
+	_, err := qs.client.Delete(ctx, &qdrant.DeletePoints{
+		CollectionName: qs.collection,
+		Wait:           qdrant.PtrOf(true),
+		Points: qdrant.NewPointsSelectorFilter(&qdrant.Filter{
+			Must: []*qdrant.Condition{
+				qdrant.NewMatch("doc_uuid", docUUID),
+			},
+		}),
+	})
+	// 同步清除本地缓存
+	var remaining []*types.Chunk
+	for _, ch := range qs.chunks {
+		if ch.Metadata == nil || ch.Metadata["doc_uuid"] != docUUID {
+			remaining = append(remaining, ch)
+		}
+	}
+	qs.chunks = remaining
+	return err
 }

@@ -69,8 +69,24 @@ func main() {
 	// 创建分块器（每块 500 字符，重叠 80，最小 125）
 	chunker := rag.NewChunker(&types.ChunkConfig{Size: 500, Overlap: 80, MinSize: 125})
 
-	// 创建向量存储
-	vectorStore := rag.NewVectorStore()
+	// 创建向量存储（支持 Qdrant 或内存两种模式）
+	qdrantHost := config.GetEnv("QDRANT_HOST", "")
+	var store rag.Store
+	if qdrantHost != "" {
+		qdrantCollection := config.GetEnv("QDRANT_COLLECTION", "volseek")
+		qdrantDim := config.GetEnvInt("QDRANT_DIMENSION", 1024)
+		qs, err := rag.NewQdrantStore(context.Background(), qdrantHost, qdrantCollection, uint64(qdrantDim))
+		if err != nil {
+			log.Printf("Warning: Qdrant init failed (%v), falling back to in-memory store", err)
+			store = rag.NewVectorStore()
+		} else {
+			store = qs
+			fmt.Println("✅ (Qdrant)")
+			fmt.Print("🔄 Loading into Qdrant... ")
+		}
+	} else {
+		store = rag.NewVectorStore()
+	}
 
 	// 创建知识图谱存储
 	graphStore := rag.NewGraphStore()
@@ -79,14 +95,14 @@ func main() {
 	queryRouter := rag.NewQueryRouter(llmClient)
 
 	// 创建多策略检索器
-	retriever := rag.NewRetriever(vectorStore, llmClient, graphStore, 5)
+	retriever := rag.NewRetriever(store, llmClient, graphStore, 5)
 
 	fmt.Println("✅")
 
 	// ========================================================================
 	// 索引示例文档
 	// ========================================================================
-	indexSampleDocuments(chunker, llmClient, vectorStore, graphStore)
+	indexSampleDocuments(chunker, llmClient, store, graphStore)
 
 	// ========================================================================
 	// 初始化工具注册中心
@@ -183,7 +199,7 @@ func main() {
 				return
 			}
 			if query == "stats" {
-				showStats(vectorStore, graphStore)
+				showStats(store, graphStore)
 				continue
 			}
 
@@ -250,7 +266,7 @@ func runQuery(ctx context.Context, volseek *agent.AgentEngine, query string) {
 }
 
 // indexSampleDocuments 索引示例文档到知识库。
-func indexSampleDocuments(chunker *rag.Chunker, llmClient *llm.Client, vs *rag.VectorStore, gs *rag.GraphStore) {
+func indexSampleDocuments(chunker *rag.Chunker, llmClient *llm.Client, store rag.Store, gs *rag.GraphStore) {
 	fmt.Print("🔄 Indexing sample documents... ")
 
 	docs := map[string]string{
@@ -1239,7 +1255,7 @@ model
 	}
 
 	// 存入向量存储
-	vs.AddBatch(allDocs)
+	store.AddBatch(allDocs)
 
 	// 构建知识图谱
 	gs.BuildFromChunks(allDocs, llmClient)
@@ -1248,11 +1264,11 @@ model
 }
 
 // showStats 显示系统状态。
-func showStats(vs *rag.VectorStore, gs *rag.GraphStore) {
+func showStats(store rag.Store, gs *rag.GraphStore) {
 	entities, relations := gs.Stats()
 	fmt.Println(strings.Repeat("-", 40))
 	fmt.Println("📊 System Status:")
-	fmt.Printf("  Chunks in vector store: %d\n", vs.Len())
+	fmt.Printf("  Chunks in vector store: %d\n", store.Len())
 	fmt.Printf("  Graph entities: %d\n", entities)
 	fmt.Printf("  Graph relations: %d\n", relations)
 	fmt.Println(strings.Repeat("-", 40))

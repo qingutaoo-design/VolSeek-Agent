@@ -449,9 +449,18 @@ func buildHeadingPath(title, heading string) string {
 // VectorStore — 内存向量存储
 // ============================================================================
 
+// Store 是向量存储的通用接口，支持内存实现和 Qdrant 等专业向量数据库。
+type Store interface {
+	Add(chunk *types.Chunk)
+	AddBatch(chunks []*types.Chunk)
+	Search(queryEmbed []float64, topK int, threshold float64) []*types.SearchResult
+	GetAllChunks() []*types.Chunk
+	Len() int
+}
+
 // VectorStore 是一个线程安全的内存向量存储。
 // 提供向量的增、删、查能力。适合中小规模场景（<10万条）。
-// 生产环境建议替换为 pgvector / Milvus 等专业向量数据库。
+// 生产环境建议替换为 pgvector / Qdrant 等专业向量数据库。
 type VectorStore struct {
 	mu     sync.RWMutex
 	chunks []*types.Chunk
@@ -527,6 +536,15 @@ func (vs *VectorStore) Len() int {
 	return len(vs.chunks)
 }
 
+// GetAllChunks 返回所有分块的副本（线程安全）。
+func (vs *VectorStore) GetAllChunks() []*types.Chunk {
+	vs.mu.RLock()
+	defer vs.mu.RUnlock()
+	result := make([]*types.Chunk, len(vs.chunks))
+	copy(result, vs.chunks)
+	return result
+}
+
 // ============================================================================
 // Retriever — 多策略检索器
 // ============================================================================
@@ -534,7 +552,7 @@ func (vs *VectorStore) Len() int {
 // Retriever 整合了向量搜索、关键词搜索和知识图谱查询。
 // 根据 QueryRouter 的判断，选择最优检索策略或混合使用。
 type Retriever struct {
-	store    *VectorStore
+	store    Store
 	llm      *llm.Client
 	graph    *GraphStore
 	topK     int
@@ -542,7 +560,7 @@ type Retriever struct {
 }
 
 // NewRetriever 创建检索器。
-func NewRetriever(store *VectorStore, llmClient *llm.Client, graph *GraphStore, topK int) *Retriever {
+func NewRetriever(store Store, llmClient *llm.Client, graph *GraphStore, topK int) *Retriever {
 	return &Retriever{
 		store:    store,
 		llm:      llmClient,
@@ -630,10 +648,8 @@ func (r *Retriever) hybridSearch(ctx context.Context, query string, topK int) []
 
 // keywordSearch 简单的关键词搜索（词袋模型 + TF 排序）。
 func (r *Retriever) keywordSearch(query string, topK int) []*types.SearchResult {
+	chunks := r.store.GetAllChunks()
 	queryTokens := tokenize(query)
-
-	r.store.mu.RLock()
-	defer r.store.mu.RUnlock()
 
 	type scored struct {
 		result *types.SearchResult
@@ -642,7 +658,7 @@ func (r *Retriever) keywordSearch(query string, topK int) []*types.SearchResult 
 
 	var results []scored
 
-	for _, chunk := range r.store.chunks {
+	for _, chunk := range chunks {
 		chunkTokens := tokenize(chunk.Content)
 		matchCount := 0
 		for _, qt := range queryTokens {

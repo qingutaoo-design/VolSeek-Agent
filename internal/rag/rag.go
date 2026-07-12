@@ -9,10 +9,10 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
-	"unicode/utf8"
 
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/llm"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/types"
@@ -29,18 +29,29 @@ type Chunker struct {
 	config types.ChunkConfig
 }
 
-// NewChunker 创建分块器，config 为 nil 时使用默认值（每块 500 字符，重叠 50）。
+// NewChunker 创建分块器，config 为 nil 时使用默认值。
+// 默认: Size=500, Overlap=80, MinSize=Size/4。
 func NewChunker(config *types.ChunkConfig) *Chunker {
 	if config == nil {
 		return &Chunker{
-			config: types.ChunkConfig{Size: 500, Overlap: 50},
+			config: types.ChunkConfig{Size: 500, Overlap: 80, MinSize: 125},
 		}
 	}
-	return &Chunker{config: *config}
+	// 补全默认值
+	cfg := *config
+	if cfg.Size <= 0 {
+		cfg.Size = 500
+	}
+	if cfg.Overlap <= 0 {
+		cfg.Overlap = cfg.Size / 6
+	}
+	if cfg.MinSize <= 0 {
+		cfg.MinSize = cfg.Size / 4
+	}
+	return &Chunker{config: cfg}
 }
 
 // Chunk 自动选择分块策略。
-// 对 Markdown 文本使用段落分块，其余使用固定大小分块。
 func (c *Chunker) Chunk(text, title string) []*types.Chunk {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -54,8 +65,31 @@ func (c *Chunker) Chunk(text, title string) []*types.Chunk {
 	return c.chunkByFixedSize(text, title)
 }
 
-// chunkByFixedSize 固定大小重叠分块。
-// 这是最通用的分块策略，保证每块不超过 Size 个字符。
+// makeChunk 创建一个 Chunk 并填充元数据。
+func (c *Chunker) makeChunk(content, title, heading string, index int) *types.Chunk {
+	chunkTitle := title
+	meta := make(map[string]string)
+	if heading != "" {
+		chunkTitle = fmt.Sprintf("%s > %s", title, heading)
+		meta["heading"] = heading
+	}
+	return &types.Chunk{
+		ID:       fmt.Sprintf("%s-%d", title, index),
+		Content:  content,
+		Index:    index,
+		DocTitle: chunkTitle,
+		Metadata: meta,
+	}
+}
+
+// =============================================================
+// 1. 改进的固定大小分块（段落感知 + 递归 + MinSize）
+// =============================================================
+
+// chunkByFixedSize 改进版：段落感知分块 + 递归切割 + MinSize 合并。
+//   - 优先在段落边界（\n\n）分割
+//   - 段落仍过大时按句子边界分割
+//   - 过小的相邻块自动合并
 func (c *Chunker) chunkByFixedSize(text, title string) []*types.Chunk {
 	runes := []rune(text)
 	totalLen := len(runes)
@@ -72,110 +106,343 @@ func (c *Chunker) chunkByFixedSize(text, title string) []*types.Chunk {
 		}}
 	}
 
+	// 第一步：按段落预分割
+	segments := c.splitByParagraph(text)
+
+	// 第二步：处理每个段落——大的递归切，小的合并
+	rawChunks := c.processParagraphs(segments, title, 0)
+
+	// 第三步：合并过小的相邻块
+	rawChunks = c.mergeSmallChunks(rawChunks)
+
+	// 第四步：重新编号
+	for i, ch := range rawChunks {
+		ch.Index = i
+		ch.ID = fmt.Sprintf("%s-%d", title, i)
+	}
+
+	return rawChunks
+}
+
+// splitByParagraph 按空行（段落边界）分割文本，保留每段原始语义。
+func (c *Chunker) splitByParagraph(text string) []string {
+	// 按两个以上换行分割（\n\n, \n\r\n 等）
+	re := regexp.MustCompile(`\n\s*\n`)
+	raw := re.Split(text, -1)
+
+	var paras []string
+	for _, p := range raw {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			paras = append(paras, p)
+		}
+	}
+	return paras
+}
+
+// processParagraphs 处理段落列表：大的递归切割，小的保留合并。
+func (c *Chunker) processParagraphs(paragraphs []string, title string, startIndex int) []*types.Chunk {
 	var chunks []*types.Chunk
-	start := 0
-	index := 0
+	idx := startIndex
 
-	for start < totalLen {
-		end := start + c.config.Size
-		if end > totalLen {
-			end = totalLen
+	for _, para := range paragraphs {
+		paraRunes := []rune(para)
+		paraLen := len(paraRunes)
+
+		if paraLen <= c.config.Size {
+			// 段落合适，直接作为一个块
+			chunks = append(chunks, c.makeChunk(para, title, "", idx))
+			idx++
+		} else {
+			// 段落过大，按句子边界递归切割
+			subChunks := c.splitOversized(para, title, idx)
+			chunks = append(chunks, subChunks...)
+			idx += len(subChunks)
 		}
-
-		chunkRunes := runes[start:end]
-
-		// 如果不在文本末尾，尝试在句子边界截断
-		if end < totalLen {
-			// 从后往前找句号、换行等自然边界
-			for j := len(chunkRunes) - 1; j > start+c.config.Size/2; j-- {
-				if chunkRunes[j] == '.' || chunkRunes[j] == '。' ||
-					chunkRunes[j] == '\n' || chunkRunes[j] == '!' || chunkRunes[j] == '？' {
-					end = start + j + 1
-					chunkRunes = runes[start:end]
-					break
-				}
-			}
-		}
-
-		chunks = append(chunks, &types.Chunk{
-			ID:       fmt.Sprintf("%s-%d", title, index),
-			Content:  string(chunkRunes),
-			Index:    index,
-			DocTitle: title,
-		})
-		index++
-
-		// 移动窗口（带重叠）
-		nextStart := end - c.config.Overlap
-		if nextStart <= start {
-			nextStart = end
-		}
-		start = nextStart
 	}
 
 	return chunks
 }
 
-// chunkByMarkdown 按 Markdown 段落分块，保留标题层级信息。
-// 比固定分块更适合技术文档，因为语义完整的段落不会被截断。
-func (c *Chunker) chunkByMarkdown(text, title string) []*types.Chunk {
-	lines := strings.Split(text, "\n")
-	var chunks []*types.Chunk
-	var currentBuilder strings.Builder
-	var currentHeading string
-	currentSize := 0
-	index := 0
+// splitOversized 递归切割过大的文本块。
+// 先尝试在句子边界分割，再对每段递归直到 Size 范围内。
+func (c *Chunker) splitOversized(text, title string, startIdx int) []*types.Chunk {
+	var result []*types.Chunk
+	idx := startIdx
+	remaining := text
 
-	flush := func() {
-		if currentBuilder.Len() > 0 {
-			content := strings.TrimSpace(currentBuilder.String())
-			if content != "" {
-				chunkTitle := title
-				if currentHeading != "" {
-					chunkTitle = fmt.Sprintf("%s > %s", title, currentHeading)
-				}
-				chunks = append(chunks, &types.Chunk{
-					ID:       fmt.Sprintf("%s-%d", title, index),
-					Content:  content,
-					Index:    index,
-					DocTitle: chunkTitle,
-				})
-				index++
+	for {
+		runes := []rune(remaining)
+		if len(runes) <= c.config.Size {
+			result = append(result, c.makeChunk(remaining, title, "", idx))
+			break
+		}
+
+		// 取前 Size 范围，在句子边界截断
+		boundary := c.findBestBoundary(string(runes[:c.config.Size]), string(runes[c.config.Size:min(len(runes), c.config.Size+100)]))
+		// 如果在 Size 前半段找不到好边界，强制在 Size 处切
+		if boundary < c.config.Size/2 || boundary <= 0 {
+			boundary = c.config.Size
+		}
+
+		chunkText := string(runes[:boundary])
+		result = append(result, c.makeChunk(chunkText, title, "", idx))
+		idx++
+
+		// 剩余部分，带重叠
+		overlapStart := max(0, boundary-c.config.Overlap)
+		remaining = string(runes[overlapStart:])
+	}
+
+	return result
+}
+
+// findBestBoundary 在文本中查找最佳分割点。
+// 优先顺序：段落空行 > 句号结尾 > 换行 > 逗号/分号。
+func (c *Chunker) findBestBoundary(current, next string) int {
+	runes := []rune(current)
+	totalLen := len(runes)
+
+	// 限制搜索范围为 Size 的后半段（避免在开头切）
+	searchStart := totalLen / 2
+	if searchStart < 10 {
+		searchStart = 10
+	}
+
+	// 优先级队列：段落边界 > 句尾 > 换行 > 标点
+	type candidate struct {
+		pos      int
+		priority int // 0=最高
+	}
+	var best candidate
+
+	for i := totalLen - 1; i >= searchStart; i-- {
+		ch := runes[i]
+
+		// 段落边界（两个换行）
+		if ch == '\n' && i+1 < totalLen && runes[i+1] == '\n' {
+			if best.priority > 0 || best.pos == 0 {
+				best = candidate{pos: i, priority: 0}
 			}
-			currentBuilder.Reset()
-			currentSize = 0
+			break // 段落边界是最高优先级，找到了直接返回
+		}
+
+		// 句尾
+		if ch == '.' || ch == '。' || ch == '！' || ch == '？' || ch == '!' || ch == '?' {
+			if best.priority > 1 || best.pos == 0 {
+				best = candidate{pos: i + 1, priority: 1}
+			}
+		}
+
+		// 换行
+		if ch == '\n' && best.priority > 2 {
+			best = candidate{pos: i + 1, priority: 2}
+		}
+
+		// 逗号/分号
+		if (ch == '，' || ch == '；' || ch == ',' || ch == ';') && best.priority > 3 {
+			best = candidate{pos: i + 1, priority: 3}
 		}
 	}
+
+	if best.pos > 0 {
+		return best.pos
+	}
+	return totalLen // 找不到好边界，返回全文
+}
+
+// mergeSmallChunks 合并过小的相邻块，减少碎片。
+func (c *Chunker) mergeSmallChunks(chunks []*types.Chunk) []*types.Chunk {
+	if len(chunks) <= 1 {
+		return chunks
+	}
+
+	var merged []*types.Chunk
+	buf := chunks[0].Content
+	bufSize := len([]rune(chunks[0].Content))
+
+	for i := 1; i < len(chunks); i++ {
+		curSize := len([]rune(chunks[i].Content))
+
+		// 当前累加块太小，或当前块太小，合并
+		if bufSize < c.config.MinSize || curSize < c.config.MinSize {
+			// 合并后不超过 Size 才合并
+			if bufSize+curSize <= c.config.Size+c.config.Overlap {
+				buf += "\n\n" + chunks[i].Content
+				bufSize += curSize + 2
+				continue
+			}
+		}
+
+		// 不合并，刷出缓存块
+		merged = append(merged, &types.Chunk{
+			ID:      chunks[len(merged)].ID,
+			Content: buf,
+			Index:   chunks[len(merged)].Index,
+			DocTitle: chunks[len(merged)].DocTitle,
+			Metadata: chunks[len(merged)].Metadata,
+		})
+		buf = chunks[i].Content
+		bufSize = curSize
+	}
+
+	// 最后一个合并缓冲
+	if buf != "" {
+		merged = append(merged, &types.Chunk{
+			ID:      chunks[len(merged)].ID,
+			Content: buf,
+			Index:   chunks[len(merged)].Index,
+			DocTitle: chunks[len(merged)].DocTitle,
+			Metadata: chunks[len(merged)].Metadata,
+		})
+	}
+
+	return merged
+}
+
+// min/max 辅助函数
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// =============================================================
+// 2. 改进的 Markdown 分块（递归 + Overlap + 元数据）
+// =============================================================
+
+// chunkByMarkdown 改进版：按标题分段 + 大章节递归切割 + Overlap 感知。
+func (c *Chunker) chunkByMarkdown(text, title string) []*types.Chunk {
+	lines := strings.Split(text, "\n")
+	var sections []markdownSection
+
+	var currentSection markdownSection
+	headingLevel := 0
+	headingText := ""
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
 
-		// Markdown 标题是新段落的开始
-		if strings.HasPrefix(trimmed, "# ") || strings.HasPrefix(trimmed, "## ") ||
-			strings.HasPrefix(trimmed, "### ") {
-			flush()
-			currentHeading = strings.TrimLeft(trimmed, "# ")
+		// 检测标题
+		if level, text, ok := parseHeading(trimmed); ok {
+			// 遇到新标题，保存上一节
+			if currentSection.content.Len() > 0 {
+				sections = append(sections, currentSection)
+			}
+			headingLevel = level
+			headingText = text
+			currentSection = markdownSection{
+				heading:    headingText,
+				level:      headingLevel,
+				headingPath: buildHeadingPath(title, headingText),
+				content:    strings.Builder{},
+			}
+			continue
 		}
 
-		lineLen := utf8.RuneCountInString(line)
-		if currentSize+lineLen > c.config.Size && currentSize > 0 {
-			flush()
-		}
-
-		currentBuilder.WriteString(line)
-		currentBuilder.WriteString("\n")
-		currentSize += lineLen + 1
+		currentSection.content.WriteString(line)
+		currentSection.content.WriteString("\n")
 	}
 
-	// 刷新最后一个段落
-	flush()
+	// 保存最后一节
+	if currentSection.content.Len() > 0 {
+		sections = append(sections, currentSection)
+	}
 
-	if len(chunks) == 0 {
-		// 如果没有成功分块（如短文本），按固定大小分块兜底
+	if len(sections) == 0 {
 		return c.chunkByFixedSize(text, title)
 	}
 
+	// 处理每个章节
+	var chunks []*types.Chunk
+	idx := 0
+
+	for i, sec := range sections {
+		secText := strings.TrimSpace(sec.content.String())
+		if secText == "" {
+			continue
+		}
+
+		// 记录本节在 chunks 中的起始位置（用于跨节重叠）
+		sectionStartIdx := len(chunks)
+
+		secRunes := []rune(secText)
+		if secRunes == nil {
+			continue
+		}
+		secLen := len(secRunes)
+
+		if secLen <= c.config.Size {
+			chunks = append(chunks, c.makeChunk(secText, title, sec.headingPath, idx))
+			idx++
+		} else {
+			subChunks := c.splitOversized(secText, title, idx)
+			for _, ch := range subChunks {
+				if ch.Metadata == nil {
+					ch.Metadata = make(map[string]string)
+				}
+				ch.Metadata["heading"] = sec.headingPath
+				ch.DocTitle = fmt.Sprintf("%s > %s", title, sec.headingPath)
+			}
+			chunks = append(chunks, subChunks...)
+			idx += len(subChunks)
+		}
+
+		// 跨章节重叠：把上一节末尾的 Overlap 内容附到本节第一块开头
+		if c.config.Overlap > 0 && i > 0 && sectionStartIdx < len(chunks) {
+			prevContent := sections[i-1].content.String()
+			prevRunes := []rune(prevContent)
+			if len(prevRunes) > c.config.Overlap {
+				tail := string(prevRunes[len(prevRunes)-c.config.Overlap:])
+				firstChunk := chunks[sectionStartIdx]
+				firstChunk.Content = tail + "\n" + firstChunk.Content
+			}
+		}
+	}
+
 	return chunks
+}
+
+// markdownSection 表示一个 Markdown 标题段落。
+type markdownSection struct {
+	heading     string
+	level       int
+	headingPath string
+	content     strings.Builder
+}
+
+// parseHeading 解析 Markdown 标题，返回级别、文本、是否匹配。
+func parseHeading(line string) (level int, text string, ok bool) {
+	if !strings.HasPrefix(line, "#") {
+		return 0, "", false
+	}
+	trimmed := strings.TrimLeft(line, "# ")
+	level = 0
+	for _, ch := range line {
+		if ch == '#' {
+			level++
+		} else {
+			break
+		}
+	}
+	return level, trimmed, true
+}
+
+// buildHeadingPath 构建标题层级路径。
+// 简单返回标题文本；后续可扩展为 "父标题 > 子标题" 格式。
+func buildHeadingPath(title, heading string) string {
+	if heading == "" {
+		return title
+	}
+	return heading
 }
 
 // ============================================================================

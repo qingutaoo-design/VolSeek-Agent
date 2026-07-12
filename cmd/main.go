@@ -66,8 +66,8 @@ func main() {
 	// ========================================================================
 	fmt.Print("🔄 Initializing RAG engine... ")
 
-	// 创建分块器（每块 500 字符，重叠 50）
-	chunker := rag.NewChunker(&types.ChunkConfig{Size: 500, Overlap: 50})
+	// 创建分块器（每块 500 字符，重叠 80，最小 125）
+	chunker := rag.NewChunker(&types.ChunkConfig{Size: 500, Overlap: 80, MinSize: 125})
 
 	// 创建向量存储
 	vectorStore := rag.NewVectorStore()

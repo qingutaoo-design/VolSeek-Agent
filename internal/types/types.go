@@ -146,8 +146,9 @@ type Chunk struct {
 
 // ChunkConfig 分块配置。
 type ChunkConfig struct {
-	Size    int // 每块字符数
+	Size    int // 每块目标字符数
 	Overlap int // 重叠字符数
+	MinSize int // 最小块字符数（防止碎片，默认 1/4 of Size）
 }
 
 // SearchResult 检索结果。

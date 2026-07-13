@@ -1,29 +1,20 @@
 ﻿// VolSeek-Agent — 一个具有规划、执行和反思能力的智能 RAG Agent。
-//
-// 主要特性：
-//   - Plan-then-Execute：Agent 先制定计划再执行，而非传统 ReAct 的边想边做
-//   - GraphRAG：知识图谱增强检索，理解实体间关系
-//   - Self-Reflection：答案生成后自我评审，确保质量
-//   - Adaptive Routing：查询意图路由，自动选择最优检索策略
-//   - Streaming SSE：流式输出，实时展示 Agent 的思考过程
-//
-// 使用方法：
-//  1. 复制 .env.example 为 .env 并填入你的 API Key
-//  2. go run cmd/main.go "你的问题"
-//  3. 或者编译后运行：go build -o volseek cmd/main.go && ./volseek "你的问题"
 package main
 
 import (
-	"bufio"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/agent"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/config"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/llm"
@@ -33,240 +24,167 @@ import (
 )
 
 func main() {
-	// ========================================================================
-	// 加载配置
-	// ========================================================================
 	if err := config.Load(); err != nil {
 		log.Printf("Warning: config load: %v", err)
 	}
 
+	volseek, store, graphStore, _ := initAgent(context.Background())
+
+	fmt.Println(strings.Repeat("=", 60))
+	fmt.Println("🤖 VolSeek-Agent 已就绪！")
+	fmt.Println(strings.Repeat("=", 60))
+
+	router := newRouter(volseek, store, graphStore)
+	srv := &http.Server{Addr: ":8080", Handler: router}
+
+	go func() {
+		log.Printf("🌐 API server on http://localhost%s", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("API server failed: %v", err)
+		}
+	}()
+
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	sig := <-quit
+	log.Printf("🛑 Received %v, shutting down...", sig)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	srv.Shutdown(ctx)
+	log.Println("👋 Exited gracefully")
+}
+
+func newRouter(volseek *agent.AgentEngine, store rag.Store, graphStore *rag.GraphStore) *gin.Engine {
+	gin.SetMode(gin.ReleaseMode)
+	r := gin.New()
+	r.Use(gin.Recovery())
+	r.Use(func(c *gin.Context) {
+		c.Header("Access-Control-Allow-Origin", "*")
+		c.Header("Access-Control-Allow-Methods", "GET,POST,OPTIONS")
+		c.Header("Access-Control-Allow-Headers", "Content-Type")
+		if c.Request.Method == "OPTIONS" { c.AbortWithStatus(204); return }
+		c.Next()
+	})
+
+	r.GET("/api/health", func(c *gin.Context) {
+		c.JSON(200, gin.H{"status": "ok", "chunks": store.Len(), "time": time.Now().Format(time.RFC3339)})
+	})
+	r.GET("/api/stats", func(c *gin.Context) {
+		e, r2 := graphStore.Stats()
+		c.JSON(200, gin.H{"chunks": store.Len(), "entities": e, "relations": r2})
+	})
+	r.POST("/api/query", func(c *gin.Context) {
+		var req struct{ Query string `json:"query" binding:"required"` }
+		if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": "missing query"}); return }
+		c.Header("Content-Type", "text/event-stream")
+		c.Header("Cache-Control", "no-cache")
+		c.Header("Connection", "keep-alive")
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		eventCh, err := volseek.Execute(ctx, req.Query)
+		if err != nil { c.SSEvent("error", gin.H{"message": err.Error()}); c.Writer.Flush(); return }
+		for event := range eventCh {
+			c.SSEvent("message", gin.H{"type": event.Type, "content": event.Content, "done": event.Done})
+			c.Writer.Flush()
+			if event.Done { break }
+		}
+	})
+	r.POST("/api/query/sync", func(c *gin.Context) {
+		var req struct{ Query string `json:"query" binding:"required"` }
+		if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": "missing query"}); return }
+		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		defer cancel()
+		eventCh, err := volseek.Execute(ctx, req.Query)
+		if err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
+		var answer string; var conf float64; var steps []string
+		for event := range eventCh {
+			switch event.Type {
+			case types.EventAnswer: answer += event.Content
+			case types.EventToolCall: steps = append(steps, event.Content)
+			case types.EventDone:
+				if d, ok := event.Data.(map[string]interface{}); ok {
+					if c, ok := d["confidence"].(float64); ok { conf = c }
+				}
+			}
+		}
+		c.JSON(200, gin.H{"answer": answer, "confidence": conf, "steps": steps})
+	})
+	return r
+}
+
+func initAgent(ctx context.Context) (*agent.AgentEngine, rag.Store, *rag.GraphStore, *llm.Client) {
 	apiKey := config.GetEnv("LLM_API_KEY", "")
 	baseURL := config.GetEnv("LLM_BASE_URL", "https://api.openai.com/v1")
 	model := config.GetEnv("LLM_MODEL", "gpt-4o-mini")
-
-	// Embedding 配置（可独立于聊天 API，如 DeepSeek 聊天 + SiliconFlow 向量化）
 	embedBaseURL := config.GetEnv("EMBEDDING_BASE_URL", baseURL)
 	embedModel := config.GetEnv("EMBEDDING_MODEL", "text-embedding-ada-002")
-	embedAPIKey := config.GetEnv("EMBEDDING_API_KEY", apiKey) // 没配则复用聊天密钥
+	embedAPIKey := config.GetEnv("EMBEDDING_API_KEY", apiKey)
 
-	if apiKey == "" {
-		fmt.Println("⚠️  LLM_API_KEY 未设置！")
-		fmt.Println("请复制 .env.example 为 .env 并填入你的 API Key")
-		fmt.Println("或通过环境变量设置: set LLM_API_KEY=sk-your-key")
-		fmt.Println()
-	}
-
-	// ========================================================================
-	// 初始化 LLM 客户端
-	// ========================================================================
 	fmt.Print("🔄 Initializing LLM client... ")
 	llmClient := llm.NewClient(apiKey, baseURL, model, embedBaseURL, embedModel, embedAPIKey)
 	fmt.Println("✅")
 
-	// ========================================================================
-	// 初始化 RAG 引擎
-	// ========================================================================
 	fmt.Print("🔄 Initializing RAG engine... ")
-
-	// 创建分块器（每块 500 字符，重叠 80，最小 125）
 	chunker := rag.NewChunker(&types.ChunkConfig{Size: 500, Overlap: 80, MinSize: 125})
-
-	// 创建向量存储（支持 Qdrant 或内存两种模式）
 	qdrantHost := config.GetEnv("QDRANT_HOST", "")
 	var store rag.Store
 	if qdrantHost != "" {
 		qdrantCollection := config.GetEnv("QDRANT_COLLECTION", "volseek")
 		qdrantDim := config.GetEnvInt("QDRANT_DIMENSION", 1024)
-		qs, err := rag.NewQdrantStore(context.Background(), qdrantHost, qdrantCollection, uint64(qdrantDim))
+		qs, err := rag.NewQdrantStore(ctx, qdrantHost, qdrantCollection, uint64(qdrantDim))
 		if err != nil {
 			log.Printf("Warning: Qdrant init failed (%v), falling back to in-memory store", err)
 			store = rag.NewVectorStore()
 		} else {
-			store = qs
-			fmt.Println("✅ (Qdrant)")
-			fmt.Print("🔄 Loading into Qdrant... ")
+			store = qs; fmt.Println("✅ (Qdrant)"); fmt.Print("🔄 Loading into Qdrant... ")
 		}
-	} else {
-		store = rag.NewVectorStore()
-	}
+	} else { store = rag.NewVectorStore() }
 
-	// 创建知识图谱存储
 	graphStore := rag.NewGraphStore()
-
-	// 创建查询意图路由器
 	queryRouter := rag.NewQueryRouter(llmClient)
-
-	// 创建多策略检索器
 	retriever := rag.NewRetriever(store, llmClient, graphStore, 5)
-
 	fmt.Println("✅")
 
-	// ========================================================================
-	// 索引示例文档
-	// ========================================================================
-	indexSampleDocuments(chunker, llmClient, store, graphStore)
-
-	// ========================================================================
-	// 初始化工具注册中心
-	// ========================================================================
 	fmt.Print("🔄 Initializing tools... ")
 	registry := tools.NewRegistry()
-
-	// 知识搜索工具（使用检索器）
-	registry.Register(tools.NewKnowledgeSearchTool(func(ctx context.Context, query string) ([]*types.SearchResult, error) {
-		// 先用查询路由器分析意图
-		intent, err := queryRouter.Analyze(ctx, query)
-		if err != nil {
-			intent = &types.QueryIntent{Type: types.QueryConceptual}
-		}
-		return retriever.Retrieve(ctx, query, intent)
+	registry.Register(tools.NewKnowledgeSearchTool(func(ctx context.Context, q string) ([]*types.SearchResult, error) {
+		intent, err := queryRouter.Analyze(ctx, q)
+		if err != nil { intent = &types.QueryIntent{Type: types.QueryConceptual} }
+		return retriever.Retrieve(ctx, q, intent)
 	}))
-
-	// 知识图谱搜索工具
 	if graphEntities, _ := graphStore.Stats(); graphEntities > 0 {
 		registry.Register(tools.NewGraphSearchTool(func(ctx context.Context, entity string) ([]*types.SearchResult, error) {
 			entities := graphStore.FindEntities(entity)
-			if len(entities) == 0 {
-				return nil, nil
-			}
+			if len(entities) == 0 { return nil, nil }
 			var results []*types.SearchResult
 			for _, e := range entities {
-				neighbors := graphStore.GetNeighbors(e.ID, 1)
-				for _, n := range neighbors {
+				for _, n := range graphStore.GetNeighbors(e.ID, 1) {
 					results = append(results, &types.SearchResult{
-						Chunk: &types.Chunk{
-							ID:       n.ID,
-							Content:  n.Context,
-							DocTitle: n.Name,
-						},
-						Score:  0.8,
-						Method: "graph",
+						Chunk: &types.Chunk{ID: n.ID, Content: n.Context, DocTitle: n.Name},
+						Score: 0.8, Method: "graph",
 					})
 				}
 			}
 			return results, nil
 		}))
 	}
-
-	// 计算器工具
 	registry.Register(tools.NewCalculatorTool())
-
-	// 最终答案工具（必须注册）
 	registry.Register(tools.NewFinalAnswerTool())
-
 	fmt.Println("✅")
 
-	// ========================================================================
-	// 初始化 Agent 引擎
-	// ========================================================================
 	fmt.Print("🔄 Initializing Agent engine... ")
-
 	agentCfg := &types.AgentConfig{
-		Temperature:       0.7,
-		MaxPlanningRounds: 10,
-		EnableReflection:  true,  // 启用自我反思
-		EnableGraphRAG:    true,  // 启用知识图谱
-		ParallelToolCalls: true,  // 启用并行工具调用
-		MaxContextTokens:  64000, // 上下文窗口
+		Temperature: 0.7, MaxPlanningRounds: 10,
+		EnableReflection: true, EnableGraphRAG: true,
+		ParallelToolCalls: true, MaxContextTokens: 64000,
 	}
-
 	volseek := agent.NewAgentEngine(agentCfg, llmClient, registry, queryRouter, retriever)
-
 	fmt.Println("✅")
-	fmt.Println(strings.Repeat("=", 60))
-	fmt.Println("🤖 VolSeek-Agent 已就绪！")
-	fmt.Println(strings.Repeat("=", 60))
 
-	// ========================================================================
-	// 交互模式
-	// ========================================================================
-	// 从命令行参数或交互式输入获取查询
-	query := strings.Join(os.Args[1:], " ")
-
-	if query == "" {
-		// 交互模式
-		fmt.Println("\n💡 输入你的问题（输入 'exit' 退出, 'stats' 查看状态）:")
-		scanner := bufio.NewScanner(os.Stdin)
-
-		for {
-			fmt.Print("\n❓ ")
-			scanner.Scan()
-			query = strings.TrimSpace(scanner.Text())
-
-			if query == "" {
-				continue
-			}
-			if query == "exit" || query == "quit" {
-				fmt.Println("👋 再见！")
-				return
-			}
-			if query == "stats" {
-				showStats(store, graphStore)
-				continue
-			}
-
-			runQuery(context.Background(), volseek, query)
-		}
-	} else {
-		// 直接执行
-		runQuery(context.Background(), volseek, query)
-	}
+	indexSampleDocuments(chunker, llmClient, store, graphStore)
+	return volseek, store, graphStore, llmClient
 }
-
-// runQuery 执行一次查询并显示结果。
-func runQuery(ctx context.Context, volseek *agent.AgentEngine, query string) {
-	fmt.Println(strings.Repeat("-", 60))
-	fmt.Printf("🔍 Query: %s\n", query)
-	fmt.Println(strings.Repeat("-", 60))
-
-	startTime := time.Now()
-
-	// 获取流式事件
-	eventCh, err := volseek.Execute(ctx, query)
-	if err != nil {
-		fmt.Printf("❌ Error: %v\n", err)
-		return
-	}
-
-	// 处理流式事件
-	var confidence float64
-
-	for event := range eventCh {
-		switch event.Type {
-		case types.EventPlan:
-			fmt.Printf("\n📋 %s\n", event.Content)
-		case types.EventThink:
-			fmt.Printf("\n🤔 %s\n", event.Content)
-		case types.EventToolCall:
-			fmt.Printf("\n🔧 %s\n", event.Content)
-		case types.EventToolResult:
-			fmt.Printf("   %s\n", event.Content)
-		case types.EventReflect:
-			fmt.Printf("\n🔍 %s\n", event.Content)
-		case types.EventAnswer:
-			fmt.Printf("\n📝 %s\n", event.Content)
-		case types.EventError:
-			fmt.Printf("\n❌ %s\n", event.Content)
-		case types.EventDone:
-			if data, ok := event.Data.(map[string]interface{}); ok {
-				if c, ok := data["confidence"].(float64); ok {
-					confidence = c
-				}
-			}
-		}
-	}
-
-	elapsed := time.Since(startTime)
-
-	// 显示执行摘要
-	fmt.Println(strings.Repeat("-", 60))
-	fmt.Printf("⏱️  Time: %v\n", elapsed.Round(time.Millisecond))
-	if confidence > 0 {
-		fmt.Printf("🎯 Confidence: %.0f%%\n", confidence*100)
-	}
-	fmt.Println(strings.Repeat("=", 60))
-}
-
 // docEntry 表示一篇待索引的文档。
 type docEntry struct {
 	uuid    string

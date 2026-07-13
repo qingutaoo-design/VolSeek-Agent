@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/qdrant/go-client/qdrant"
@@ -12,6 +13,7 @@ import (
 
 // QdrantStore 基于 Qdrant 向量数据库的持久化存储实现。
 type QdrantStore struct {
+	mu         sync.RWMutex
 	client     *qdrant.Client
 	collection string
 	dimension  uint64
@@ -132,7 +134,9 @@ func (qs *QdrantStore) toPoint(chunk *types.Chunk, docUUID, docHash string) *qdr
 
 // Add 添加单个分块。
 func (qs *QdrantStore) Add(chunk *types.Chunk) {
+	qs.mu.Lock()
 	qs.chunks = append(qs.chunks, chunk)
+	qs.mu.Unlock()
 	p := qs.toPoint(chunk, "", "")
 	if p == nil {
 		return
@@ -156,7 +160,9 @@ func (qs *QdrantStore) AddBatch(chunks []*types.Chunk) {
 // AddBatchWithMeta 批量添加并写入文档元数据。
 // wait=true 同步刷盘；wait=false 异步写入（更快，但宕机可能丢数据）。
 func (qs *QdrantStore) AddBatchWithMeta(chunks []*types.Chunk, docUUID, docHash string, wait bool) {
+	qs.mu.Lock()
 	qs.chunks = append(qs.chunks, chunks...)
+	qs.mu.Unlock()
 
 	points := make([]*qdrant.PointStruct, 0, len(chunks))
 	for _, ch := range chunks {
@@ -220,6 +226,8 @@ func (qs *QdrantStore) Search(queryEmbed []float64, topK int, threshold float64)
 
 // GetAllChunks 返回所有分块的副本。
 func (qs *QdrantStore) GetAllChunks() []*types.Chunk {
+	qs.mu.RLock()
+	defer qs.mu.RUnlock()
 	r := make([]*types.Chunk, len(qs.chunks))
 	copy(r, qs.chunks)
 	return r
@@ -227,6 +235,8 @@ func (qs *QdrantStore) GetAllChunks() []*types.Chunk {
 
 // Len 返回存储中的分块总数。
 func (qs *QdrantStore) Len() int {
+	qs.mu.RLock()
+	defer qs.mu.RUnlock()
 	return len(qs.chunks)
 }
 
@@ -270,6 +280,7 @@ func (qs *QdrantStore) DeleteByDocUUID(ctx context.Context, docUUID string) erro
 		}),
 	})
 	// 同步清除本地缓存
+	qs.mu.Lock()
 	var remaining []*types.Chunk
 	for _, ch := range qs.chunks {
 		if ch.Metadata == nil || ch.Metadata["doc_uuid"] != docUUID {
@@ -277,5 +288,6 @@ func (qs *QdrantStore) DeleteByDocUUID(ctx context.Context, docUUID string) erro
 		}
 	}
 	qs.chunks = remaining
+	qs.mu.Unlock()
 	return err
 }

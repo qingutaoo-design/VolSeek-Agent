@@ -95,7 +95,7 @@ func (r *APIReranker) Rerank(ctx context.Context, query string, candidates []*ty
 	}
 	bodyBytes, _ := json.Marshal(reqBody)
 
-	req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL+"/rerank", bytes.NewReader(bodyBytes))
+	req, err := http.NewRequestWithContext(ctx, "POST", r.baseURL, bytes.NewReader(bodyBytes))
 	if err != nil {
 		log.Printf("[Reranker] create request failed: %v", err)
 		return candidates

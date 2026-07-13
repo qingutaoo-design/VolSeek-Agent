@@ -63,22 +63,20 @@ func InitAgent(ctx context.Context) (*agent.AgentEngine, rag.Store, *rag.GraphSt
 		if err != nil { intent = &types.QueryIntent{Type: types.QueryConceptual} }
 		return retriever.Retrieve(ctx, q, intent)
 	}))
-	if graphEntities, _ := graphStore.Stats(); graphEntities > 0 {
-		registry.Register(tools.NewGraphSearchTool(func(ctx context.Context, entity string) ([]*types.SearchResult, error) {
-			entities := graphStore.FindEntities(entity)
-			if len(entities) == 0 { return nil, nil }
-			var results []*types.SearchResult
-			for _, e := range entities {
-				for _, n := range graphStore.GetNeighbors(e.ID, 1) {
-					results = append(results, &types.SearchResult{
-						Chunk: &types.Chunk{ID: n.ID, Content: n.Context, DocTitle: n.Name},
-						Score: 0.8, Method: "graph",
-					})
-				}
+	registry.Register(tools.NewGraphSearchTool(func(ctx context.Context, entity string) ([]*types.SearchResult, error) {
+		entities := graphStore.FindEntities(entity)
+		if len(entities) == 0 { return nil, nil }
+		var results []*types.SearchResult
+		for _, e := range entities {
+			for _, n := range graphStore.GetNeighbors(e.ID, 1) {
+				results = append(results, &types.SearchResult{
+					Chunk: &types.Chunk{ID: n.ID, Content: n.Context, DocTitle: n.Name},
+					Score: 0.8, Method: "graph",
+				})
 			}
-			return results, nil
-		}))
-	}
+		}
+		return results, nil
+	}))
 	registry.Register(tools.NewCalculatorTool())
 	registry.Register(tools.NewFinalAnswerTool())
 	fmt.Println("✅")

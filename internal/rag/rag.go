@@ -607,7 +607,8 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, intent *types.Qu
 	case types.QueryFactual:
 		// 事实性查询：关键词搜索 + 向量搜索并行
 		results := r.hybridSearch(ctx, query, r.topK)
-		return r.deduplicate(results), nil
+		results = r.deduplicate(results)
+		return r.rerankIfEnabled(ctx, query, results), nil
 
 	case types.QueryConceptual:
 		// 概念性查询：纯向量搜索
@@ -615,7 +616,8 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, intent *types.Qu
 		if err != nil {
 			return nil, err
 		}
-		return r.store.Search(embed, r.topK, r.theshold), nil
+		results := r.store.Search(embed, r.topK, r.theshold)
+		return r.rerankIfEnabled(ctx, query, results), nil
 
 	case types.QueryComparative:
 		// 比较性查询：混合搜索（向量+关键词 RRF 融合）
@@ -624,7 +626,8 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, intent *types.Qu
 		if len(results) > r.topK {
 			results = results[:r.topK]
 		}
-		return r.deduplicate(results), nil
+		results = r.deduplicate(results)
+		return r.rerankIfEnabled(ctx, query, results), nil
 
 	case types.QueryAnalytical:
 		// 分析性查询：向量搜索 + 知识图谱拓展
@@ -640,7 +643,8 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, intent *types.Qu
 			vecResults = append(vecResults, graphResults...)
 		}
 
-		return r.deduplicate(vecResults), nil
+		vecResults = r.deduplicate(vecResults)
+		return r.rerankIfEnabled(ctx, query, vecResults), nil
 
 	case types.QueryRecent:
 		// 实时性查询：返回空结果（需要 web_search 工具）
@@ -649,7 +653,8 @@ func (r *Retriever) Retrieve(ctx context.Context, query string, intent *types.Qu
 	default:
 		// 兜底：混合搜索
 		results := r.hybridSearch(ctx, query, r.topK)
-		return r.deduplicate(results), nil
+		results = r.deduplicate(results)
+		return r.rerankIfEnabled(ctx, query, results), nil
 	}
 }
 

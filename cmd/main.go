@@ -21,13 +21,13 @@ func main() {
 		log.Printf("Warning: config load: %v", err)
 	}
 
-	volseek, store, graphStore, _ := initapp.InitAgent(context.Background())
+	volseek, store, graphStore, _, kbManager := initapp.InitAgent(context.Background())
 
 	fmt.Println(strings.Repeat("=", 60))
 	fmt.Println("🤖 VolSeek-Agent 已就绪！")
 	fmt.Println(strings.Repeat("=", 60))
 
-	router := initapp.NewRouter(volseek, store, graphStore)
+	router := initapp.NewRouter(volseek, store, graphStore, kbManager)
 	srv := &http.Server{Addr: ":8080", Handler: router}
 
 	go func() {

@@ -432,6 +432,71 @@ func (t *FinalAnswerTool) Execute(_ context.Context, args json.RawMessage) *type
 	}
 }
 
+// MemoryRecallTool — 对话记忆召回工具
+// MemoryRecallTool 允许 Agent 主动召回或总结当前会话的历史记录。
+// 当用户询问"我们刚才聊了什么？"、"总结一下对话"等时，Agent 可调用此工具。
+type MemoryRecallTool struct {
+	name       string
+	parameters json.RawMessage
+	recallFunc func(ctx context.Context, limit int, summarize bool) (string, error)
+}
+
+// NewMemoryRecallTool 创建记忆召回工具。
+func NewMemoryRecallTool(fn func(ctx context.Context, limit int, summarize bool) (string, error)) *MemoryRecallTool {
+	return &MemoryRecallTool{
+		name: "memory_recall",
+		parameters: json.RawMessage(`{
+			"type": "object",
+			"properties": {
+				"limit": {
+					"type": "integer",
+					"description": "Number of recent conversation entries to recall (default 20, max 100)"
+				},
+				"summarize": {
+					"type": "boolean",
+					"description": "If true, generates an LLM summary of the conversation history; if false, returns raw entries"
+				}
+			}
+		}`),
+		recallFunc: fn,
+	}
+}
+
+func (t *MemoryRecallTool) Name() string               { return t.name }
+func (t *MemoryRecallTool) Description() string {
+	return `Recall or summarize recent conversation history from the current session.
+Use this tool when the user asks about previous topics, wants a summary of the conversation (e.g., "summarize our conversation", "what did we discuss?"), or when you need to reference earlier exchanges.
+With summarize=true, generates a concise LLM summary; with summarize=false, returns raw conversation history entries.`
+}
+func (t *MemoryRecallTool) Parameters() json.RawMessage { return t.parameters }
+
+func (t *MemoryRecallTool) Execute(ctx context.Context, args json.RawMessage) *types.ToolResult {
+	var input struct {
+		Limit     int  `json:"limit"`
+		Summarize bool `json:"summarize"`
+	}
+	if err := json.Unmarshal(args, &input); err != nil {
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("invalid args: %v", err)}
+	}
+	if input.Limit <= 0 {
+		input.Limit = 20
+	}
+	if input.Limit > 100 {
+		input.Limit = 100
+	}
+
+	output, err := t.recallFunc(ctx, input.Limit, input.Summarize)
+	if err != nil {
+		return &types.ToolResult{Success: false, Error: fmt.Sprintf("memory recall failed: %v", err)}
+	}
+
+	return &types.ToolResult{
+		Success: true,
+		Output:  output,
+		Data:    map[string]interface{}{"summarized": input.Summarize},
+	}
+}
+
 // 工具函数
 // Builder 是高效的字符串构建器。
 type Builder struct{ b []byte }

@@ -8,6 +8,7 @@ import (
 
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/agent"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/config"
+	"github.com/qingutaoo-design/VolSeek-Agent/internal/knowledge"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/llm"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/memory"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/rag"
@@ -15,7 +16,7 @@ import (
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/types"
 )
 
-func InitAgent(ctx context.Context) (*agent.AgentEngine, rag.Store, *rag.GraphStore, *llm.Client) {
+func InitAgent(ctx context.Context) (*agent.AgentEngine, rag.Store, *rag.GraphStore, *llm.Client, *knowledge.Manager) {
 	apiKey := config.GetEnv("LLM_API_KEY", "")
 	baseURL := config.GetEnv("LLM_BASE_URL", "https://api.openai.com/v1")
 	model := config.GetEnv("LLM_MODEL", "gpt-4o-mini")
@@ -96,6 +97,49 @@ func InitAgent(ctx context.Context) (*agent.AgentEngine, rag.Store, *rag.GraphSt
 	})
 	fmt.Println("✅")
 
+	fmt.Print("🔄 Registering memory recall tool... ")
+	registry.Register(tools.NewMemoryRecallTool(func(ctx context.Context, limit int, summarize bool) (string, error) {
+		sid := extractSessionID(ctx)
+		entries, err := mem.Recall(ctx, sid, limit)
+		if err != nil {
+			return "", err
+		}
+		if len(entries) == 0 {
+			return "(no previous conversation history)", nil
+		}
+
+		if summarize {
+			var lines []string
+			for _, e := range entries {
+				lines = append(lines, e.Role+": "+e.Content)
+			}
+			content := strings.Join(lines, "\n")
+			prompt := "Summarize the following conversation history into 2-3 concise sentences:\n" + content
+			resp, err := llmClient.Chat(ctx, []types.LLMMessage{
+				{Role: "user", Content: prompt},
+			}, nil, 0.3)
+			if err != nil {
+				return "", err
+			}
+			if resp != nil {
+				return resp.Content, nil
+			}
+			return "(summary unavailable)", nil
+		}
+
+		var sb strings.Builder
+		sb.WriteString(fmt.Sprintf("Recent conversation history (last %d entries):\n", len(entries)))
+		for _, e := range entries {
+			role := e.Role
+			if role == "assistant" {
+				role = "you"
+			}
+			sb.WriteString(fmt.Sprintf("[%s] %s\n", role, e.Content))
+		}
+		return sb.String(), nil
+	}))
+	fmt.Println("✅")
+
 	fmt.Print("🔄 Initializing Agent engine... ")
 	agentCfg := &types.AgentConfig{
 		Temperature: 0.7, MaxPlanningRounds: 10,
@@ -105,6 +149,30 @@ func InitAgent(ctx context.Context) (*agent.AgentEngine, rag.Store, *rag.GraphSt
 	volseek := agent.NewAgentEngine(agentCfg, llmClient, registry, queryRouter, retriever, mem)
 	fmt.Println("✅")
 
+	// 初始化知识库管理器（本地文件管理）
+	kbDir := config.GetEnv("KB_DIR", "./knowledge_base")
+	kbManager, err := knowledge.NewManager(kbDir, chunker, llmClient, store, graphStore)
+	if err != nil {
+		log.Printf("Warning: KB manager init failed: %v", err)
+	}
+
+	// 索引示例文档（仅首次运行时没有知识库文件时作为兜底）
 	IndexSampleDocuments(chunker, llmClient, store, graphStore)
-	return volseek, store, graphStore, llmClient
+
+	// 扫描并索引知识库目录中的现有文件
+	if kbManager != nil {
+		if err := kbManager.LoadAndIndexExisting(ctx); err != nil {
+			log.Printf("Warning: load existing KB files: %v", err)
+		}
+	}
+
+	return volseek, store, graphStore, llmClient, kbManager
+}
+
+// extractSessionID 从 context 中提取会话 ID，未设置时返回 "default"。
+func extractSessionID(ctx context.Context) string {
+	if sid, ok := ctx.Value("session_id").(string); ok && sid != "" {
+		return sid
+	}
+	return "default"
 }

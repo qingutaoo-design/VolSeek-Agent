@@ -445,6 +445,7 @@ type Store interface {
 	Search(queryEmbed []float64, topK int, threshold float64) []*types.SearchResult
 	GetAllChunks() []*types.Chunk
 	Len() int
+	DeleteByDocUUID(ctx context.Context, docUUID string) error
 }
 
 // VectorStore 是一个线程安全的内存向量存储。
@@ -532,6 +533,25 @@ func (vs *VectorStore) GetAllChunks() []*types.Chunk {
 	result := make([]*types.Chunk, len(vs.chunks))
 	copy(result, vs.chunks)
 	return result
+}
+
+// DeleteByDocUUID 删除指定文档 UUID 的所有关联分块。
+func (vs *VectorStore) DeleteByDocUUID(_ context.Context, docUUID string) error {
+	vs.mu.Lock()
+	defer vs.mu.Unlock()
+	var remaining []*types.Chunk
+	for _, ch := range vs.chunks {
+		if ch.Metadata == nil || ch.Metadata["doc_uuid"] != docUUID {
+			remaining = append(remaining, ch)
+		}
+	}
+	vs.chunks = remaining
+	// 重建 docIndex
+	vs.docIndex = make(map[string][]*types.Chunk)
+	for _, ch := range vs.chunks {
+		vs.docIndex[ch.DocTitle] = append(vs.docIndex[ch.DocTitle], ch)
+	}
+	return nil
 }
 
 // Retriever — 多策略检索器
@@ -903,6 +923,15 @@ func (gs *GraphStore) Stats() (entities int, relations int) {
 	gs.mu.RLock()
 	defer gs.mu.RUnlock()
 	return len(gs.entities), len(gs.relations)
+}
+
+// Clear 清空知识图谱中的所有实体和关系。
+func (gs *GraphStore) Clear() {
+	gs.mu.Lock()
+	defer gs.mu.Unlock()
+	gs.entities = make(map[string]*types.EntityNode)
+	gs.relations = nil
+	gs.nameIndex = make(map[string]*types.EntityNode)
 }
 
 // QueryRouter — 查询意图路由器

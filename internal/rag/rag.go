@@ -1,4 +1,4 @@
-// Package rag 提供完整的 RAG（检索增强生成）能力。
+﻿// Package rag 提供完整的 RAG（检索增强生成）能力。
 // 包含三大核心组件：
 //  1. Chunker：智能文档分块
 //  2. Retriever：多策略检索器（向量搜索 + 知识图谱 + 关键词）
@@ -8,6 +8,7 @@ package rag
 import (
 	"context"
 	"fmt"
+	"log"
 	"math"
 	"regexp"
 	"sort"
@@ -18,10 +19,7 @@ import (
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/types"
 )
 
-// ============================================================================
 // Chunker — 文档分块器
-// ============================================================================
-
 // Chunker 支持两种分块策略：固定大小重叠分块 和 语义段落分块。
 // 策略选择：对结构化文档（Markdown、代码）使用段落分块保留语义边界；
 // 对纯文本使用固定大小分块确保检索粒度。
@@ -82,10 +80,7 @@ func (c *Chunker) makeChunk(content, title, heading string, index int) *types.Ch
 	}
 }
 
-// =============================================================
 // 1. 改进的固定大小分块（段落感知 + 递归 + MinSize）
-// =============================================================
-
 // chunkByFixedSize 改进版：段落感知分块 + 递归切割 + MinSize 合并。
 //   - 优先在段落边界（\n\n）分割
 //   - 段落仍过大时按句子边界分割
@@ -315,10 +310,7 @@ func max(a, b int) int {
 	return b
 }
 
-// =============================================================
 // 2. 改进的 Markdown 分块（递归 + Overlap + 元数据）
-// =============================================================
-
 // chunkByMarkdown 改进版：按标题分段 + 大章节递归切割 + Overlap 感知。
 func (c *Chunker) chunkByMarkdown(text, title string) []*types.Chunk {
 	lines := strings.Split(text, "\n")
@@ -445,10 +437,7 @@ func buildHeadingPath(title, heading string) string {
 	return heading
 }
 
-// ============================================================================
 // VectorStore — 内存向量存储
-// ============================================================================
-
 // Store 是向量存储的通用接口，支持内存实现和 Qdrant 等专业向量数据库。
 type Store interface {
 	Add(chunk *types.Chunk)
@@ -545,29 +534,44 @@ func (vs *VectorStore) GetAllChunks() []*types.Chunk {
 	return result
 }
 
-// ============================================================================
 // Retriever — 多策略检索器
-// ============================================================================
-
-// Retriever 整合了向量搜索、关键词搜索和知识图谱查询。
-// 根据 QueryRouter 的判断，选择最优检索策略或混合使用。
+// Retriever 整合了向量搜索、关键词搜索、知识图谱查询和重排。
 type Retriever struct {
 	store    Store
 	llm      *llm.Client
 	graph    *GraphStore
+	reranker Reranker
 	topK     int
 	theshold float64
 }
 
-// NewRetriever 创建检索器。
-func NewRetriever(store Store, llmClient *llm.Client, graph *GraphStore, topK int) *Retriever {
+// NewRetriever 创建检索器。reranker 为 nil 时不执行重排。
+func NewRetriever(store Store, llmClient *llm.Client, graph *GraphStore, reranker Reranker, topK int) *Retriever {
 	return &Retriever{
 		store:    store,
 		llm:      llmClient,
 		graph:    graph,
+		reranker: reranker,
 		topK:     topK,
 		theshold: 0.5,
 	}
+}
+
+// rerankIfEnabled 在配置了 reranker 时对结果执行重排，否则直接返回前 topK 条。
+func (r *Retriever) rerankIfEnabled(ctx context.Context, query string, results []*types.SearchResult) []*types.SearchResult {
+	if r.reranker == nil {
+		if len(results) > r.topK {
+			results = results[:r.topK]
+		}
+		return results
+	}
+	log.Printf("[Reranker] reranking %d candidates for query: %.50s...", len(results), query)
+	reranked := r.reranker.Rerank(ctx, query, results)
+	// 重排后截断
+	if len(reranked) > r.topK {
+		reranked = reranked[:r.topK]
+	}
+	return reranked
 }
 
 // Retrieve 根据查询意图执行多策略检索。
@@ -772,10 +776,7 @@ func (r *Retriever) deduplicate(results []*types.SearchResult) []*types.SearchRe
 	return out
 }
 
-// ============================================================================
 // GraphStore — 知识图谱存储
-// ============================================================================
-
 // GraphStore 管理实体-关系知识图谱。
 // 图谱通过分析文档内容自动构建，支持实体消歧和关系遍历。
 type GraphStore struct {
@@ -904,10 +905,7 @@ func (gs *GraphStore) Stats() (entities int, relations int) {
 	return len(gs.entities), len(gs.relations)
 }
 
-// ============================================================================
 // QueryRouter — 查询意图路由器
-// ============================================================================
-
 // QueryRouter 分析用户查询，识别意图类型，决定最优检索策略。
 // 创新点：不把查询盲目发给向量搜索，而是先"理解"查询需要什么。
 type QueryRouter struct {
@@ -1056,10 +1054,7 @@ func (qr *QueryRouter) parseIntent(jsonStr string) *types.QueryIntent {
 	return intent
 }
 
-// ============================================================================
 // 工具函数
-// ============================================================================
-
 // cosineSimilarity 计算两个向量的余弦相似度。
 func cosineSimilarity(a, b []float64) float64 {
 	if len(a) != len(b) || len(a) == 0 {

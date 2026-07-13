@@ -1,4 +1,4 @@
-// Package tools 提供 Agent 可调用的工具注册中心和工具实现。
+﻿// Package tools 提供 Agent 可调用的工具注册中心和工具实现。
 // 设计原则：
 //   - 每个工具实现 Tool 接口
 //   - Registry 作为工厂管理所有工具
@@ -16,10 +16,7 @@ import (
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/types"
 )
 
-// ============================================================================
 // Tool 接口定义
-// ============================================================================
-
 // Tool 是所有工具必须实现的接口。
 // Name: 工具的唯一标识，LLM 通过名称引用工具
 // Description: LLM 理解工具用途的提示文本
@@ -32,10 +29,7 @@ type Tool interface {
 	Execute(ctx context.Context, args json.RawMessage) *types.ToolResult
 }
 
-// ============================================================================
 // Registry — 工具注册中心
-// ============================================================================
-
 // Registry 管理所有可用的工具。
 // 线程安全，支持运行时动态注册/注销。
 // 提供统一的工具调用接口和超时控制。
@@ -126,10 +120,7 @@ func (r *Registry) ExecuteTool(ctx context.Context, name string, args json.RawMe
 	return tool.Execute(ctx, args)
 }
 
-// ============================================================================
 // KnowledgeSearchTool — 知识搜索工具
-// ============================================================================
-
 // KnowledgeSearchTool 是 Agent 的核心检索工具。
 // 它通过语义向量搜索从知识库中查找相关信息。
 type KnowledgeSearchTool struct {
@@ -186,7 +177,7 @@ func (t *KnowledgeSearchTool) Execute(ctx context.Context, args json.RawMessage)
 	if len(results) == 0 {
 		return &types.ToolResult{
 			Success: true,
-			Output:  "No relevant information found in the knowledge base.",
+			Output:  "No relevant information found in the knowledge base. (You must answer based on your own general knowledge, and set confidence to 0.3-0.5.)",
 		}
 	}
 
@@ -211,10 +202,7 @@ func (t *KnowledgeSearchTool) Execute(ctx context.Context, args json.RawMessage)
 	}
 }
 
-// ============================================================================
 // GraphSearchTool — 知识图谱搜索工具
-// ============================================================================
-
 // GraphSearchTool 查询知识图谱，返回实体间的关系网络。
 // 当需要理解多个概念之间的关系时使用。
 type GraphSearchTool struct {
@@ -283,10 +271,7 @@ func (t *GraphSearchTool) Execute(ctx context.Context, args json.RawMessage) *ty
 	}
 }
 
-// ============================================================================
 // WebSearchTool — 网页搜索工具
-// ============================================================================
-
 // WebSearchTool 搜索互联网获取最新信息。
 // 用于回答需要实时数据的查询。
 type WebSearchTool struct {
@@ -343,10 +328,7 @@ func (t *WebSearchTool) Execute(ctx context.Context, args json.RawMessage) *type
 	}
 }
 
-// ============================================================================
 // CalculatorTool — 计算器工具
-// ============================================================================
-
 // CalculatorTool 执行数学计算和数据分析。
 // 当 Agent 需要进行精确计算时使用。
 type CalculatorTool struct {
@@ -400,10 +382,7 @@ func (t *CalculatorTool) Execute(_ context.Context, args json.RawMessage) *types
 	}
 }
 
-// ============================================================================
 // FinalAnswerTool — 最终答案工具（控制 Agent 何时给出最终答案）
-// ============================================================================
-
 // FinalAnswerTool 是 Agent 用来提交最终答案的工具。
 // 调用此工具意味着 Agent 完成了所有调研，准备给出最终答案。
 // 创新点：通过强制使用此工具，确保 Agent 不会"忘记"提供答案。
@@ -431,7 +410,7 @@ func NewFinalAnswerTool() *FinalAnswerTool {
 				},
 				"sources": {
 					"type": "array",
-					"description": "List of sources used",
+					"description": "Source document titles from knowledge_search, or [\"general knowledge\"] if no KB sources",
 					"items": {"type": "string"}
 				}
 			},
@@ -453,10 +432,7 @@ func (t *FinalAnswerTool) Execute(_ context.Context, args json.RawMessage) *type
 	}
 }
 
-// ============================================================================
 // 工具函数
-// ============================================================================
-
 // Builder 是高效的字符串构建器。
 type Builder struct{ b []byte }
 

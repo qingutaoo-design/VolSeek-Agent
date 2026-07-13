@@ -1,4 +1,4 @@
-// Package llm 提供统一的 LLM 调用接口，支持 OpenAI/DeepSeek 等兼容 API。
+﻿// Package llm 提供统一的 LLM 调用接口，支持 OpenAI/DeepSeek 等兼容 API。
 package llm
 
 import (

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/uuid"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/agent"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/knowledge"
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/rag"
@@ -45,7 +46,8 @@ func NewRouter(volseek *agent.AgentEngine, store rag.Store, graphStore *rag.Grap
 		c.Header("Content-Type", "text/event-stream;charset=utf-8"); c.Header("Cache-Control", "no-cache"); c.Header("Connection", "keep-alive")
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		eventCh, err := volseek.Execute(ctx, req.Query)
+		memCtx := context.WithValue(ctx, "session_id", uuid.New().String())
+		eventCh, err := volseek.Execute(memCtx, req.Query)
 		if err != nil {
 			data, _ := json.Marshal(gin.H{"message": err.Error()})
 			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", data)
@@ -64,7 +66,8 @@ func NewRouter(volseek *agent.AgentEngine, store rag.Store, graphStore *rag.Grap
 		if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": "missing query"}); return }
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
-		eventCh, err := volseek.Execute(ctx, req.Query)
+		memCtx := context.WithValue(ctx, "session_id", uuid.New().String())
+		eventCh, err := volseek.Execute(memCtx, req.Query)
 		if err != nil { c.JSON(500, gin.H{"error": err.Error()}); return }
 		var answer string; var conf float64
 		for event := range eventCh {
@@ -78,7 +81,7 @@ func NewRouter(volseek *agent.AgentEngine, store rag.Store, graphStore *rag.Grap
 	r.POST("/api/chat", func(c *gin.Context) {
 		var req struct{ Query string `json:"query" binding:"required"`; SessionID string `json:"session_id"` }
 		if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": "missing query"}); return }
-		if req.SessionID == "" { req.SessionID = "default" }
+		if req.SessionID == "" { req.SessionID = uuid.New().String() }
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		memCtx := context.WithValue(ctx, "session_id", req.SessionID)

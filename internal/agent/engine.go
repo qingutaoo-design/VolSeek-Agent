@@ -154,7 +154,12 @@ func (e *AgentEngine) executeWithEvents(ctx context.Context, query string, ch ch
 		state.FinalAnswer = "Please try rephrasing your question."; state.Confidence = 0.0
 	}
 
-	e.sendEvent(ch, types.EventAnswer, state.FinalAnswer, stepIndex, len(plan.SubGoals), false)
+	// 将最终答案按小块逐块发送，实现流式输出效果
+	chunks := splitIntoChunks(state.FinalAnswer, 3)
+	for _, chunk := range chunks {
+		e.sendEvent(ch, types.EventAnswer, chunk, stepIndex, len(plan.SubGoals), false)
+		time.Sleep(15 * time.Millisecond)
+	}
 	ch <- types.StreamEvent{Type: types.EventDone, Content: state.FinalAnswer,
 		Data: map[string]interface{}{"confidence": state.Confidence, "steps": len(state.Steps), "sources": state.Sources}, Done: true}
 
@@ -494,4 +499,24 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return string(runes[:n]) + "..."
+}
+
+// splitIntoChunks 将字符串按 rune 拆分成指定大小的块，用于流式输出。
+func splitIntoChunks(text string, chunkSize int) []string {
+	if text == "" {
+		return nil
+	}
+	runes := []rune(text)
+	if chunkSize <= 0 {
+		chunkSize = 3
+	}
+	chunks := make([]string, 0, (len(runes)+chunkSize-1)/chunkSize)
+	for i := 0; i < len(runes); i += chunkSize {
+		end := i + chunkSize
+		if end > len(runes) {
+			end = len(runes)
+		}
+		chunks = append(chunks, string(runes[i:end]))
+	}
+	return chunks
 }

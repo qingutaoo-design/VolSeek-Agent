@@ -196,6 +196,29 @@ func (c *Client) ChatStream(ctx context.Context, messages []types.LLMMessage, to
 	return ch, nil
 }
 
+// ChatStreamWithRetry 带重试的流式聊天补全。
+// 包装 ChatStream，在可重试错误时自动重试。
+func (c *Client) ChatStreamWithRetry(ctx context.Context, messages []types.LLMMessage, tools []openai.Tool, temperature float64) (<-chan types.StreamEvent, error) {
+	maxRetries := 3
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			log.Printf("[LLM] Stream retry %d/%d: %v", attempt+1, maxRetries, lastErr)
+			time.Sleep(time.Duration(attempt+1) * time.Second)
+		}
+		ch, err := c.ChatStream(ctx, messages, tools, temperature)
+		if err == nil {
+			return ch, nil
+		}
+		lastErr = err
+		if !isRetryable(err) {
+			return nil, err
+		}
+	}
+	return nil, fmt.Errorf("LLM stream call failed after retries: %w", lastErr)
+}
+
 // toolCallAccumulator 用于累积流式 tool call 的增量数据。
 type toolCallAccumulator struct {
 	ID        string

@@ -116,7 +116,7 @@ func TestCompressionEfficiency(t *testing.T) {
 
 	ctx := context.Background()
 	// 10 轮对话（20 条消息），足以触发压缩且避免过多 LLM API 调用
-	const rounds = 10
+	const rounds = 20
 
 	// 尝试创建真实 LLM 摘要器
 	realSum := newLLMSummarizer(ctx)

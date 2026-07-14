@@ -2,6 +2,8 @@ package initapp
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -26,6 +28,10 @@ func NewRouter(volseek *agent.AgentEngine, store rag.Store, graphStore *rag.Grap
 		if c.Request.Method == "OPTIONS" { c.AbortWithStatus(204); return }
 		c.Next()
 	})
+	// Serve static frontend files at root paths (matching HTML relative references)
+	r.Static("/css", "./frontend/css")
+	r.Static("/js", "./frontend/js")
+	r.StaticFile("/", "./frontend/index.html")
 	r.GET("/api/health", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok", "chunks": store.Len(), "time": time.Now().Format(time.RFC3339)})
 	})
@@ -36,12 +42,22 @@ func NewRouter(volseek *agent.AgentEngine, store rag.Store, graphStore *rag.Grap
 	r.POST("/api/query", func(c *gin.Context) {
 		var req struct{ Query string `json:"query" binding:"required"` }
 		if err := c.ShouldBindJSON(&req); err != nil { c.JSON(400, gin.H{"error": "missing query"}); return }
-		c.Header("Content-Type", "text/event-stream"); c.Header("Cache-Control", "no-cache"); c.Header("Connection", "keep-alive")
+		c.Header("Content-Type", "text/event-stream;charset=utf-8"); c.Header("Cache-Control", "no-cache"); c.Header("Connection", "keep-alive")
 		ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 		defer cancel()
 		eventCh, err := volseek.Execute(ctx, req.Query)
-		if err != nil { c.SSEvent("error", gin.H{"message": err.Error()}); c.Writer.Flush(); return }
-		for event := range eventCh { c.SSEvent("message", gin.H{"type": event.Type, "content": event.Content, "done": event.Done}); c.Writer.Flush(); if event.Done { break } }
+		if err != nil {
+			data, _ := json.Marshal(gin.H{"message": err.Error()})
+			fmt.Fprintf(c.Writer, "event: error\ndata: %s\n\n", data)
+			c.Writer.Flush()
+			return
+		}
+		for event := range eventCh {
+			data, _ := json.Marshal(gin.H{"type": event.Type, "content": event.Content, "done": event.Done})
+			fmt.Fprintf(c.Writer, "event: message\ndata: %s\n\n", data)
+			c.Writer.Flush()
+			if event.Done { break }
+		}
 	})
 	r.POST("/api/query/sync", func(c *gin.Context) {
 		var req struct{ Query string `json:"query" binding:"required"` }

@@ -31,7 +31,8 @@ func main() {
 	srv := &http.Server{Addr: ":8080", Handler: router}
 
 	go func() {
-		log.Printf("🌐 API server on http://localhost%s", srv.Addr)
+		log.Printf("🌐 Frontend: http://localhost%s", srv.Addr)
+		log.Printf("🌐 API:     http://localhost%s/api/health", srv.Addr)
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("API server failed: %v", err)
 		}

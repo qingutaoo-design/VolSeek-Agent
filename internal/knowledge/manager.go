@@ -25,6 +25,16 @@ import (
 	"github.com/qingutaoo-design/VolSeek-Agent/internal/types"
 )
 
+// kbNamespace 是用于从文件名派生确定性 UUID 的命名空间 UUID。
+// 这个 UUID 无特殊含义，仅用于确保同一文件名生成相同的 UUIDv5。
+var kbNamespace = uuid.MustParse("a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+
+// docUUIDFromName 从文件名生成确定性 UUID（UUIDv5 / SHA-1）。
+// 相同文件名总是产生相同 UUID，用于检测重复上传。
+func docUUIDFromName(name string) string {
+	return uuid.NewSHA1(kbNamespace, []byte(name)).String()
+}
+
 // FileInfo 记录知识库中上传文件的元数据。
 type FileInfo struct {
 	UUID       string    `json:"uuid"`
@@ -168,10 +178,30 @@ func (m *Manager) Upload(ctx context.Context, filename string, reader io.Reader)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 生成唯一标识
-	fileUUID := uuid.New().String()
+	// 从文件名生成确定性 UUID（相同文件名 -> 相同 UUID）
+	fileUUID := docUUIDFromName(filename)
 	hash := sha256.Sum256(data)
 	hashStr := hex.EncodeToString(hash[:])
+
+	// 检查是否已存在同名文档
+	if existing, ok := m.files[fileUUID]; ok {
+		if existing.Hash == hashStr {
+			log.Printf("[KB] Skipping %q — unchanged (hash matches)", filename)
+			cp := *existing
+			return &cp, nil
+		}
+		log.Printf("[KB] Updating %q — content changed, re-indexing", filename)
+		// 删除旧的向量 chunk
+		if err := m.store.DeleteByDocUUID(ctx, fileUUID); err != nil {
+			log.Printf("[KB] Warning: delete old chunks for %q: %v", filename, err)
+		}
+		// 删除旧的磁盘文件
+		oldPath := filepath.Join(m.baseDir, existing.DiskName)
+		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[KB] Warning: remove old file for %q: %v", filename, err)
+		}
+		delete(m.files, fileUUID)
+	}
 
 	// 清理文件名（防止路径穿越）
 	safeName := sanitizeFilename(filename)
@@ -236,13 +266,33 @@ func (m *Manager) ImportFile(ctx context.Context, filePath string) (*FileInfo, e
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	// 生成唯一标识
-	fileUUID := uuid.New().String()
+	filename := filepath.Base(filePath)
+
+	// 从文件名生成确定性 UUID
+	fileUUID := docUUIDFromName(filename)
 	hash := sha256.Sum256(data)
 	hashStr := hex.EncodeToString(hash[:])
 
+	// 检查是否已存在同名文档
+	if existing, ok := m.files[fileUUID]; ok {
+		if existing.Hash == hashStr {
+			log.Printf("[KB] Skipping import of %q — unchanged (hash matches)", filename)
+			cp := *existing
+			return &cp, nil
+		}
+		log.Printf("[KB] Updating %q via import — content changed, re-indexing", filename)
+		if err := m.store.DeleteByDocUUID(ctx, fileUUID); err != nil {
+			log.Printf("[KB] Warning: delete old chunks for %q: %v", filename, err)
+		}
+		oldPath := filepath.Join(m.baseDir, existing.DiskName)
+		if err := os.Remove(oldPath); err != nil && !os.IsNotExist(err) {
+			log.Printf("[KB] Warning: remove old file for %q: %v", filename, err)
+		}
+		delete(m.files, fileUUID)
+	}
+
 	// 清理文件名并复制到知识库目录
-	safeName := sanitizeFilename(filepath.Base(filePath))
+	safeName := sanitizeFilename(filename)
 	diskName := fmt.Sprintf("%s_%s", fileUUID, safeName)
 	destPath := filepath.Join(m.baseDir, diskName)
 	if err := os.WriteFile(destPath, data, 0644); err != nil {
@@ -251,7 +301,7 @@ func (m *Manager) ImportFile(ctx context.Context, filePath string) (*FileInfo, e
 
 	info := &FileInfo{
 		UUID:      fileUUID,
-		Name:      filepath.Base(filePath),
+		Name:      filename,
 		DiskName:  diskName,
 		Size:      int64(len(data)),
 		Hash:      hashStr,

@@ -1,4 +1,5 @@
 # 🤖 VolSeek-Agent
+目前已经上线部署：http://43.136.68.74:8080/
 
 > **Plan-then-Execute 智能 RAG Agent 框架** — HTTP API 服务 + Web 前端  
 > 从零构建，支持向量检索、自我反思和多工具调用的智能 Agent
